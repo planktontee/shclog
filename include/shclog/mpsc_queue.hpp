@@ -86,7 +86,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
             return false;
 
         const size_t cur_count =
-            count.value.fetch_add(1, std::memory_order_relaxed);
+            count.value.fetch_add(1, std::memory_order_acquire);
         if (cur_count >= max) {
             count.value.fetch_sub(1, std::memory_order_relaxed);
             return false;
@@ -97,7 +97,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         assert(buffer.value[h & buf_mask].load(std::memory_order_relaxed) ==
                nullptr);
         const auto rv = buffer.value[h & buf_mask].exchange(
-            v.release(), std::memory_order_relaxed);
+            v.release(), std::memory_order_release);
         assert(!rv);
 
         return true;
@@ -105,14 +105,14 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
 
     std::unique_ptr<T> dequeue() noexcept {
         const auto ret = buffer.value[tail.value].exchange(
-            nullptr, std::memory_order_relaxed);
+            nullptr, std::memory_order_acquire);
 
         if (!ret)
             return nullptr;
 
         tail.value = (tail.value + 1) & buf_mask;
 
-        const size_t r = count.value.fetch_sub(1, std::memory_order_relaxed);
+        const size_t r = count.value.fetch_sub(1, std::memory_order_release);
         assert(r > 0);
         return std::unique_ptr<T>(ret);
     }

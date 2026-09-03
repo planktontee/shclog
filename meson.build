@@ -5,12 +5,15 @@ project(
     'cpp_std=c++23',
     'warning_level=3',
     'werror=true',
-    'cpp_args=-fno-exceptions -Wno-interference-size',
+    'cpp_args=-fno-exceptions -Wno-interference-size -march=native',
   ],
 )
 
 shclog_inc = include_directories('include')
-shclog_sources = []
+shclog_sources = [
+  'src' / 'shclog' / 'io' / 'syscall.cpp',
+  'src' / 'shclog' / 'io' / 'mmap.cpp',
+]
 shclog_lib = static_library('shclog_lib', shclog_sources, include_directories: shclog_inc)
 
 # executable(
@@ -25,7 +28,11 @@ doctest_dep = dependency('doctest', fallback: ['doctest'])
 
 shclog_objs = shclog_lib.extract_all_objects(recursive: true)
 test_inc = include_directories('test', 'include')
-test_src = ['test' / 'shclog' / 'test_mpsc_queue.cpp']
+test_src = [
+  'test' / 'test_main.cpp',
+  'test' / 'shclog' / 'test_mpsc_queue.cpp',
+  'test' / 'shclog' / 'io' / 'test_mmap.cpp',
+]
 
 test_exe = executable(
   'unit_tests',
