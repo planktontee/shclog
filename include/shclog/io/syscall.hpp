@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <limits>
 #include <source_location>
+
 namespace shclog::io::syscall {
 
 // I shamelessly stole this from zig
@@ -316,7 +317,7 @@ enum Errno : uint16_t {
 
 };
 
-Errno iouring_errno(const int rc) noexcept;
+Errno io_uring_errno(const int rc) noexcept;
 
 Errno e_errno(const int rc) noexcept;
 

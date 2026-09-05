@@ -9,6 +9,7 @@
 #include <expected>
 #include <linux/io_uring.h>
 #include <memory>
+#include <optional>
 #include <span>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -26,18 +27,50 @@ enum class IoUringSetupError {
     Unexpected,
 };
 
-const std::expected<fd_t, IoUringSetupError>
-iouring_setup(io_uring_params &params, const uint32_t capacity) noexcept;
+const std::expected<const fd_t, IoUringSetupError>
+io_uring_setup(io_uring_params &params, const uint32_t capacity) noexcept;
 
 enum class IoUringEnterError {
+    ResourcesTemporarilyUnavailable,
+    BadFdForRing,
+    RingIsDisabled,
+    CompletionQueueIsFull,
+    SubmissionQueueIsFull,
     Unexpected,
 };
 
-const std::expected<uint32_t, IoUringEnterError>
-iouring_enter(const fd_t ring_fd, const uint32_t to_submit,
-              const uint32_t min_complete, const uint32_t flags,
-              sigset_t *sig = nullptr) noexcept;
+const std::expected<const uint32_t, IoUringEnterError>
+io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
+               const uint32_t min_complete, const uint32_t flags,
+               sigset_t *sig = nullptr) noexcept;
 
+enum class RingQueueAllocError {
+    OutOfMemory,
+    Unexpected,
+};
+
+template <typename T = uint8_t>
+static std::expected<std::unique_ptr<T, MmapDeleter>, RingQueueAllocError>
+io_uring_mmap(const fd_t ring_fd, const size_t size, const uint64_t offset) {
+
+    auto mmp_r = mmap::mmap<T>(size, nullptr, PROT_READ | PROT_WRITE,
+                               MAP_SHARED | MAP_POPULATE, ring_fd, offset);
+
+    if (!mmp_r)
+        switch (mmp_r.error()) {
+        case mmap::MmapError::OutOfMemory:
+            return std::unexpected(RingQueueAllocError::OutOfMemory);
+        default:
+            debug_e_errno();
+            return std::unexpected(RingQueueAllocError::Unexpected);
+        }
+
+    return std::move(mmp_r.value());
+}
+
+// This is not thread safe, for it to be thread safe
+// we would need changes in the release/acquire model and add another stamping
+// to the push and pull process
 struct EventedIo {
   public:
     enum CreateError {
@@ -46,24 +79,6 @@ struct EventedIo {
         NoAvailableFd,
         OutOfMemory,
     };
-
-    template <typename T = uint8_t>
-    static std::expected<std::unique_ptr<T, MmapDeleter>, CreateError>
-    alloc(const fd_t ring_fd, const size_t size, const uint64_t offset) {
-
-        auto mmp_r = mmap::mmap<T>(size, nullptr, PROT_READ | PROT_WRITE,
-                                   MAP_SHARED | MAP_POPULATE, ring_fd, offset);
-
-        if (!mmp_r)
-            switch (mmp_r.error()) {
-            case mmap::MmapError::OutOfMemory:
-                return std::unexpected(CreateError::OutOfMemory);
-            default:
-                return std::unexpected(CreateError::UnableToSetupRing);
-            }
-
-        return std::move(mmp_r.value());
-    }
 
     static std::expected<std::unique_ptr<EventedIo>, CreateError>
     create(const uint32_t capacity, const uint32_t flags) noexcept {
@@ -74,7 +89,7 @@ struct EventedIo {
         std::memset(&params, 0, sizeof(params));
         params.flags = flags;
 
-        const auto setup_r = iouring_setup(params, capacity);
+        const auto setup_r = io_uring_setup(params, capacity);
         if (!setup_r)
             switch (setup_r.error()) {
             case IoUringSetupError::ProcessFdQuotaExceeded:
@@ -100,17 +115,29 @@ struct EventedIo {
             cq_size = sq_size;
         }
 
-        auto sq_mmap_r = alloc(ring_fd.get(), sq_size, IORING_OFF_SQ_RING);
+        auto sq_mmap_r =
+            io_uring_mmap(ring_fd.get(), sq_size, IORING_OFF_SQ_RING);
         if (!sq_mmap_r)
-            return std::unexpected(sq_mmap_r.error());
+            switch (sq_mmap_r.error()) {
+            case RingQueueAllocError::OutOfMemory:
+                return std::unexpected(CreateError::OutOfMemory);
+            default:
+                return std::unexpected(CreateError::UnableToSetupRing);
+            }
 
         auto sq_ptr = std::move(sq_mmap_r.value());
         std::unique_ptr<uint8_t, MmapDeleter> cq_ptr = nullptr;
 
         if (!single_mmap) {
-            auto cq_mmap_r = alloc(ring_fd.get(), cq_size, IORING_OFF_CQ_RING);
+            auto cq_mmap_r =
+                io_uring_mmap(ring_fd.get(), cq_size, IORING_OFF_CQ_RING);
             if (!cq_mmap_r)
-                return std::unexpected(cq_mmap_r.error());
+                switch (cq_mmap_r.error()) {
+                case RingQueueAllocError::OutOfMemory:
+                    return std::unexpected(CreateError::OutOfMemory);
+                default:
+                    return std::unexpected(CreateError::UnableToSetupRing);
+                }
 
             cq_ptr = std::move(cq_mmap_r.value());
         }
@@ -131,11 +158,16 @@ struct EventedIo {
         const uint32_t sq_mask = *reinterpret_cast<uint32_t *>(
             sq_ptr.get() + params.sq_off.ring_mask);
 
-        auto sqes_mmap_r = alloc<io_uring_sqe>(
+        auto sqes_mmap_r = io_uring_mmap<io_uring_sqe>(
             ring_fd.get(), params.sq_entries * sizeof(io_uring_sqe),
             IORING_OFF_SQES);
         if (!sqes_mmap_r)
-            return std::unexpected(sqes_mmap_r.error());
+            switch (sqes_mmap_r.error()) {
+            case RingQueueAllocError::OutOfMemory:
+                return std::unexpected(CreateError::OutOfMemory);
+            default:
+                return std::unexpected(CreateError::UnableToSetupRing);
+            }
 
         auto sqes = std::move(sqes_mmap_r.value());
 
@@ -172,13 +204,17 @@ struct EventedIo {
     enum class PushResult {
         Success,
         WakeFailed,
+        QueueIsFull,
     };
 
     PushResult push_writev(const fd_t fd, const std::span<const iovec> iovecs,
                            const size_t offset) noexcept {
-        const uint32_t tail = sq_tail->load(std::memory_order_relaxed);
-        const uint32_t index = tail & sq_mask;
+        const auto opt_slot = next_sq_slot();
+        if (!opt_slot)
+            return PushResult::QueueIsFull;
+        const auto slot = opt_slot.value();
 
+        const uint32_t index = slot & sq_mask;
         auto sqe = &sqes.get()[index];
         sqe->opcode = IORING_OP_WRITEV;
         sqe->fd = fd;
@@ -186,14 +222,40 @@ struct EventedIo {
         sqe->len = iovecs.size();
         sqe->off = offset;
 
-        return submit(index, tail);
+        return submit(slot, index);
+    }
+
+    PushResult push_read(const fd_t fd, const std::span<uint8_t> buff,
+                         const size_t offset) noexcept {
+        const auto opt_slot = next_sq_slot();
+        if (!opt_slot)
+            return PushResult::QueueIsFull;
+        const auto slot = opt_slot.value();
+
+        const uint32_t index = slot & sq_mask;
+        auto sqe = &sqes.get()[index];
+        sqe->opcode = IORING_OP_READ;
+        sqe->fd = fd;
+        sqe->addr = reinterpret_cast<uint64_t>(buff.data());
+        sqe->len = buff.size();
+        sqe->off = offset;
+
+        return submit(slot, index);
     }
 
     enum class PopError {
+        CompletionCheckError,
         RingEmpty,
     };
 
     enum class WritevError {
+        BadIovecsSize,
+        AccessDenied,
+        TemporarilyUnavailable,
+        NoSpaceLeft,
+        BadFd,
+        WriteFailed,
+        Terminated,
         Unexpected,
     };
 
@@ -205,9 +267,28 @@ struct EventedIo {
             return std::unexpected(rc_r.error());
 
         const auto rc = rc_r.value();
-        switch (iouring_errno(rc)) {
+        switch (io_uring_errno(rc)) {
         case Errno::SUCCESS:
             break;
+        case Errno::INVAL:
+        case Errno::FBIG:
+        case Errno::RANGE:
+            return std::unexpected(WritevError::BadIovecsSize);
+        case Errno::AGAIN:
+            return std::unexpected(WritevError::TemporarilyUnavailable);
+        case Errno::BADF:
+        case Errno::PIPE:
+        case Errno::NETDOWN:
+        case Errno::NETUNREACH:
+            return std::unexpected(WritevError::BadFd);
+        case Errno::INTR:
+            return std::unexpected(WritevError::Terminated);
+        case Errno::NOSPC:
+            return std::unexpected(WritevError::NoSpaceLeft);
+        case Errno::NXIO:
+            return std::unexpected(WritevError::WriteFailed);
+        case Errno::ACCES:
+            return std::unexpected(WritevError::AccessDenied);
         default:
             debug_e_errno(-rc);
             return std::unexpected(WritevError::Unexpected);
@@ -217,6 +298,10 @@ struct EventedIo {
     }
 
     enum class ReadError {
+        TemporarilyUnavailable,
+        BadFd,
+        FdIsDir,
+        BadBuffer,
         Unexpected,
     };
 
@@ -228,30 +313,23 @@ struct EventedIo {
             return std::unexpected(rc_r.error());
 
         const auto rc = rc_r.value();
-        switch (iouring_errno(rc)) {
+        switch (io_uring_errno(rc)) {
         case Errno::SUCCESS:
             break;
+        case Errno::AGAIN:
+            return std::unexpected(ReadError::TemporarilyUnavailable);
+        case Errno::BADF:
+            return std::unexpected(ReadError::BadFd);
+        case Errno::INVAL:
+            return std::unexpected(ReadError::BadBuffer);
+        case Errno::ISDIR:
+            return std::unexpected(ReadError::FdIsDir);
         default:
             debug_e_errno(-rc);
             return std::unexpected(ReadError::Unexpected);
         }
 
         return static_cast<uint32_t>(rc);
-    }
-
-    PushResult push_read(const fd_t fd, const std::span<uint8_t> buff,
-                         const size_t offset) noexcept {
-        const uint32_t tail = sq_tail->load(std::memory_order_relaxed);
-        const uint32_t index = tail & sq_mask;
-
-        auto sqe = &sqes.get()[index];
-        sqe->opcode = IORING_OP_READ;
-        sqe->fd = fd;
-        sqe->addr = reinterpret_cast<uint64_t>(buff.data());
-        sqe->len = buff.size();
-        sqe->off = offset;
-
-        return submit(index, tail);
     }
 
   private:
@@ -316,44 +394,44 @@ struct EventedIo {
     //
     // iopoll might be necessary, lets see the diff later
 
-    std::expected<const int32_t, PopError> pop_one() noexcept {
-        auto wait_r = wait_one();
-        if (wait_r != WaitResult::Success)
-            return std::unexpected(PopError::RingEmpty);
+    std::expected<const int32_t, PopError> pop_one() {
+        auto wait_r =
+            io_uring_enter(ring_fd.get(), 0, 1, IORING_ENTER_GETEVENTS);
+        if (!wait_r.has_value())
+            return std::unexpected(PopError::CompletionCheckError);
 
         const uint32_t head = cq_head->load(std::memory_order_acquire);
-
         if (head == cq_tail->load(std::memory_order_relaxed))
             return std::unexpected(PopError::RingEmpty);
 
-        io_uring_cqe *const cqe = &cqes[head & cq_mask];
-
+        const int32_t rc = cqes[head & cq_mask].res;
         cq_head->store(head + 1, std::memory_order_release);
-
-        return cqe->res;
+        return rc;
     }
 
-    enum class WaitResult {
-        Success,
-        GetFailure,
-    };
+    std::optional<uint32_t> next_sq_slot() {
+        const uint32_t tail = sq_tail->load(std::memory_order_relaxed);
+        const uint32_t head = sq_head->load(std::memory_order_acquire);
 
-    WaitResult wait_one() {
-        auto r = iouring_enter(ring_fd.get(), 0, 1, IORING_ENTER_GETEVENTS);
-        if (!r.has_value())
-            return WaitResult::GetFailure;
-        return WaitResult::Success;
+        if (tail - head >= (sq_mask + 1))
+            return std::nullopt;
+        return std::optional(tail);
     }
 
-    PushResult submit(const uint32_t index, const uint32_t tail) noexcept {
+    PushResult submit(const uint32_t slot, const uint32_t index) noexcept {
         sq_array[index] = index;
-        sq_tail->store(tail + 1, std::memory_order_release);
+        // This way of doing the stamping and not claiming the slot earlier
+        // and having no checks over whats stored clearly means it's not thread
+        // safe
+        sq_tail->store(slot + 1, std::memory_order_release);
+
         if (is_sq_poll && (*sq_flags & IORING_SQ_NEED_WAKEUP)) {
-            auto r = iouring_enter(ring_fd.get(), 0, 0, IORING_ENTER_SQ_WAKEUP);
+            auto r =
+                io_uring_enter(ring_fd.get(), 0, 0, IORING_ENTER_SQ_WAKEUP);
             if (!r.has_value())
                 return PushResult::WakeFailed;
         } else {
-            auto r = iouring_enter(ring_fd.get(), 1, 0, 0);
+            auto r = io_uring_enter(ring_fd.get(), 1, 0, 0);
             if (!r.has_value())
                 return PushResult::WakeFailed;
         }

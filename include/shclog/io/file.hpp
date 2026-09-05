@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <utility>
+
 namespace shclog::io::file {
 using fd_t = int;
 constexpr fd_t invalid_fd = -1;

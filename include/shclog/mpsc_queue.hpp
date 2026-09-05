@@ -17,11 +17,7 @@
     - enforce power of 2 capacity
     - use mask-based wrap around
     - added cacheline split for variables
-    - changed atomicity fencing to relaxed
-        - enqueue doesnt need acquire/release because the value itself
-          changed is atomic, which is the case for buffer, head and count
-        - dequeue doesnt need it because tail is supposed to be used single
-          threaded, count and buffer are changed in atomics
+    - changed atomicity fencing to relaxed where possible
     - drain on free because queue owns data
     - not allowing nullptr inserts
     - moving nullptr insert check + empty dequeue return as unlikely branches

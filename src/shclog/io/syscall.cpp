@@ -29,7 +29,7 @@ Errno e_errno(const int rc) noexcept {
     return static_cast<Errno>(e);
 }
 
-Errno iouring_errno(const int rc) noexcept {
+Errno io_uring_errno(const int rc) noexcept {
     if (rc >= 0)
         return Errno::SUCCESS;
 
