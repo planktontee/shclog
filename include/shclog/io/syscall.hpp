@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <cstdint>
 #include <limits>
 #include <source_location>
@@ -315,10 +316,13 @@ enum Errno : uint16_t {
 
 };
 
+Errno iouring_errno(const int rc) noexcept;
+
 Errno e_errno(const int rc) noexcept;
 
 Errno e_errno(const void *rc) noexcept;
 
 Errno debug_e_errno(
+    const int e_errno = errno,
     const std::source_location loc = std::source_location::current()) noexcept;
 } // namespace shclog::io::syscall

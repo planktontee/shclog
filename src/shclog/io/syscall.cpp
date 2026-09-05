@@ -1,14 +1,14 @@
 #include "shclog/io/syscall.hpp"
-#include <cerrno>
 #include <cstring>
 #include <print>
 #include <utility>
 
 namespace shclog::io::syscall {
-Errno debug_e_errno(const std::source_location loc) noexcept {
+Errno debug_e_errno(const int e_errno,
+                    const std::source_location loc) noexcept {
 #ifndef NDEBUG
     std::println(stderr, "Panic in {}: {} (errno: {})", loc.function_name(),
-                 std::strerror(errno), errno);
+                 std::strerror(e_errno), e_errno);
     std::abort();
     std::unreachable();
 #else
@@ -21,6 +21,19 @@ Errno e_errno(const int rc) noexcept {
         return Errno::SUCCESS;
 
     const int e = errno;
+
+    // last defined Errno comparison
+    if (e < 0 || e > 177)
+        return Errno::UNEXPECTED;
+
+    return static_cast<Errno>(e);
+}
+
+Errno iouring_errno(const int rc) noexcept {
+    if (rc >= 0)
+        return Errno::SUCCESS;
+
+    const int e = -rc;
 
     // last defined Errno comparison
     if (e < 0 || e > 177)

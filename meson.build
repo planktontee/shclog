@@ -13,6 +13,8 @@ shclog_inc = include_directories('include')
 shclog_sources = [
   'src' / 'shclog' / 'io' / 'syscall.cpp',
   'src' / 'shclog' / 'io' / 'mmap.cpp',
+  'src' / 'shclog' / 'io' / 'file.cpp',
+  'src' / 'shclog' / 'io' / 'iouring.cpp',
 ]
 shclog_lib = static_library('shclog_lib', shclog_sources, include_directories: shclog_inc)
 
@@ -32,6 +34,7 @@ test_src = [
   'test' / 'test_main.cpp',
   'test' / 'shclog' / 'test_mpsc_queue.cpp',
   'test' / 'shclog' / 'io' / 'test_mmap.cpp',
+  'test' / 'shclog' / 'io' / 'test_iouring.cpp',
 ]
 
 test_exe = executable(
