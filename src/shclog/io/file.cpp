@@ -62,4 +62,41 @@ std::expected<unique_fd, OpenError> tmpfile(const OpenMode openMode,
     return std::expected<unique_fd, OpenError>(std::in_place,
                                                unique_fd(open_r.value()));
 }
+
+std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
+                                             const std::span<const uint8_t> buf,
+                                             const int64_t offset) {
+    const int64_t rc =
+        ::syscall(__NR_pwrite64, fd, buf.data(), buf.size(), offset);
+
+    // TODO: unroll errors
+    switch (e_errno(rc)) {
+    case Errno::SUCCESS:
+        break;
+    default:
+        debug_e_errno();
+        return std::unexpected(WriteError::Unexpected);
+    }
+
+    return static_cast<uint64_t>(rc);
+}
+
+std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
+                                             const std::span<const iovec> buf,
+                                             const int64_t offset,
+                                             const int32_t flags) {
+    const int64_t rc =
+        ::syscall(__NR_pwritev, fd, buf.data(), buf.size(), offset, flags);
+
+    // TODO: unroll errors
+    switch (e_errno(rc)) {
+    case Errno::SUCCESS:
+        break;
+    default:
+        debug_e_errno();
+        return std::unexpected(WritevError::Unexpected);
+    }
+
+    return static_cast<uint64_t>(rc);
+}
 } // namespace shclog::io::file

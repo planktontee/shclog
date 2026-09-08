@@ -1,5 +1,6 @@
 #include "shclog/io/iouring.hpp"
 #include <asm/unistd_64.h>
+#include <utility>
 
 namespace shclog::io::iouring {
 
@@ -34,24 +35,61 @@ io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
 
     const int rc = ::syscall(__NR_io_uring_enter, ring_fd, to_submit,
                              min_complete, flags, sig);
-    switch (e_errno(rc)) {
-    case Errno::SUCCESS:
-        break;
-    case Errno::AGAIN:
-        return std::unexpected(
-            IoUringEnterError::ResourcesTemporarilyUnavailable);
-    case Errno::BADFD:
-        return std::unexpected(IoUringEnterError::RingIsDisabled);
-    case Errno::BADR:
-        return std::unexpected(IoUringEnterError::CompletionQueueIsFull);
-    case Errno::BUSY:
-        return std::unexpected(IoUringEnterError::SubmissionQueueIsFull);
-    default:
-        debug_e_errno();
-        return std::unexpected(IoUringEnterError::Unexpected);
-    }
+    if (rc < 0) [[unlikely]]
+        switch (e_errno(rc)) {
+        case Errno::SUCCESS:
+            std::unreachable();
+        case Errno::AGAIN:
+            return std::unexpected(
+                IoUringEnterError::ResourcesTemporarilyUnavailable);
+        case Errno::BADFD:
+            return std::unexpected(IoUringEnterError::RingIsDisabled);
+        case Errno::BADR:
+            return std::unexpected(IoUringEnterError::CompletionQueueIsFull);
+        case Errno::BUSY:
+            return std::unexpected(IoUringEnterError::SubmissionQueueIsFull);
+        default:
+            debug_e_errno();
+            return std::unexpected(IoUringEnterError::Unexpected);
+        }
 
     return static_cast<uint32_t>(rc);
 }
 
+const std::expected<const uint32_t, IoUringRegisterError>
+io_uring_register(const fd_t ring_fd, const uint32_t opcode, const void *arg,
+                  uint32_t nr_args) noexcept {
+
+    const int rc =
+        ::syscall(__NR_io_uring_register, ring_fd, opcode, arg, nr_args);
+
+    switch (e_errno(rc)) {
+    case Errno::SUCCESS:
+        break;
+    case Errno::INVAL:
+    case Errno::FAULT:
+    case Errno::OPNOTSUPP:
+    case Errno::NOENT:
+        return std::unexpected(IoUringRegisterError::BadRequest);
+    case Errno::ACCES:
+    case Errno::EXIST:
+        return std::unexpected(IoUringRegisterError::AccessDenied);
+    case Errno::BADF:
+        return std::unexpected(IoUringRegisterError::BadFd);
+    case Errno::BUSY:
+        return std::unexpected(
+            IoUringRegisterError::RegistrationsAlreadyInPlace);
+    case Errno::MFILE:
+        return std::unexpected(IoUringRegisterError::TooManyFiles);
+    case Errno::NOMEM:
+        return std::unexpected(IoUringRegisterError::OutOfMem);
+    case Errno::NXIO:
+        return std::unexpected(IoUringRegisterError::RegistrationFailed);
+    default:
+        debug_e_errno();
+        return std::unexpected(IoUringRegisterError::Unexpected);
+    }
+
+    return static_cast<uint32_t>(rc);
+}
 } // namespace shclog::io::iouring

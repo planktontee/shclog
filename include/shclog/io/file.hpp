@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <expected>
 #include <fcntl.h>
+#include <span>
 #include <unistd.h>
 #include <utility>
 
@@ -35,8 +36,8 @@ class unique_fd {
     int release() noexcept { return std::exchange(fd, -1); }
 
     void reset(int fd = -1) noexcept {
-        if (fd != -1)
-            close(fd);
+        if (this->fd != -1)
+            close(this->fd);
 
         this->fd = fd;
     }
@@ -70,4 +71,21 @@ std::expected<unique_fd, OpenError>
 tmpfile(const OpenMode openMode = OpenMode::read_write,
         const uint64_t flags = O_CLOEXEC, const uint64_t mode = 0600) noexcept;
 
+// TODO: unroll errors
+enum class WriteError {
+    Unexpected,
+};
+
+std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
+                                             const std::span<const uint8_t> buf,
+                                             const int64_t offset);
+
+enum class WritevError {
+    Unexpected,
+};
+
+std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
+                                             const std::span<const iovec> buf,
+                                             const int64_t offset,
+                                             const int32_t flags = 0);
 } // namespace shclog::io::file
