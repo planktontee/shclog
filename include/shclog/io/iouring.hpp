@@ -97,6 +97,17 @@ struct EventedIo {
         OutOfMemory,
     };
 
+    ~EventedIo() noexcept {
+        assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_BUFFERS,
+                                 nullptr, 0)
+                   .has_value());
+        assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_FILES,
+                                 nullptr, 0)
+                   .has_value());
+
+        unregister_ring_fd();
+    }
+
     static std::expected<std::unique_ptr<EventedIo>, CreateError>
     create(const uint32_t capacity, const uint32_t flags) noexcept {
         if (capacity == 0 || (capacity & (capacity - 1)) != 0)
@@ -532,6 +543,21 @@ struct EventedIo {
     //
     // iopoll might be necessary, lets see the diff later
 
+    void unregister_ring_fd() noexcept {
+        if (registered_ring_fd.has_value()) {
+            io_uring_rsrc_update reg{
+                .offset = static_cast<uint32_t>(registered_ring_fd.value()),
+                .resv = 0,
+                .data = 0,
+            };
+
+            assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_RING_FDS,
+                                     &reg, 1)
+                       .has_value());
+        }
+    }
+
+    // Should only be called during init
     void register_ring_fd() noexcept {
         const io_uring_rsrc_update reg{
             .offset = static_cast<uint32_t>(-1),
@@ -539,8 +565,7 @@ struct EventedIo {
             .data = static_cast<uint64_t>(ring_fd.get()),
         };
         const auto reg_r =
-            io_uring_register(ring_fd.get(), IORING_REGISTER_RING_FDS,
-                              reinterpret_cast<const void *>(&reg), 1);
+            io_uring_register(ring_fd.get(), IORING_REGISTER_RING_FDS, &reg, 1);
         if (reg_r.has_value())
             registered_ring_fd = static_cast<fd_t>(reg.offset);
     }

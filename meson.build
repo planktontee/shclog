@@ -3,9 +3,8 @@ project(
   'cpp',
   default_options: [
     'cpp_std=c++23',
-    'warning_level=3',
     'werror=true',
-    'cpp_args=-fno-exceptions -Wno-interference-size -march=native',
+    'cpp_args=-Wall -Wextra -Wpedantic -fno-exceptions -Wno-interference-size -march=native',
   ],
 )
 
@@ -15,6 +14,8 @@ shclog_sources = [
   'src' / 'shclog' / 'io' / 'mmap.cpp',
   'src' / 'shclog' / 'io' / 'file.cpp',
   'src' / 'shclog' / 'io' / 'iouring.cpp',
+  'src' / 'shclog' / 'io' / 'cpu.cpp',
+  'src' / 'shclog' / 'io' / 'process.cpp',
 ]
 shclog_lib = static_library('shclog_lib', shclog_sources, include_directories: shclog_inc)
 
