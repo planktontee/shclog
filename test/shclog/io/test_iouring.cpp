@@ -1,3 +1,4 @@
+#include "shclog/io/syscall.hpp"
 #include <algorithm>
 #include <array>
 #include <asm/unistd_64.h>
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iomanip>
+#include <ios>
 #include <iostream>
 #include <linux/fs.h>
 #include <linux/io_uring.h>
@@ -19,7 +21,9 @@
 #include <numeric>
 #include <pthread.h>
 #include <random>
+#include <ranges>
 #include <sched.h>
+#include <set>
 #include <string_view>
 #include <sys/resource.h>
 #include <thread>
@@ -32,7 +36,6 @@
 #include "shclog/io/iouring.hpp"
 #include "shclog/io/process.hpp"
 #include "shclog/mpsc_queue.hpp"
-#include "shclog/pause.hpp"
 
 using namespace shclog::io;
 using namespace shclog::io::iouring;
@@ -89,44 +92,80 @@ TEST_CASE("Pwritev/read with ring") {
 }
 
 #define RUN_CHECKS 1
-#define BENCHMARK 1
-#define SLOTTEDQ 0
+#define BENCHMARK 0
+#define QUEUE_TYPE 2
 
-TEST_CASE("MPSC -> dual-buffer WRITEV") {
+TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     using clock = std::chrono::steady_clock;
-    constexpr size_t MAX_HW_CORES = 8;
+
 #if BENCHMARK
-    constexpr size_t PRODUCERS = MAX_HW_CORES - 2;
+    auto cpu_cores_r = list_cpu_cores();
+    CHECK(cpu_cores_r.has_value());
+    auto cores = cpu_cores_r.value();
+
+    std::set<size_t> target_cores;
+    for (auto core : cores)
+        target_cores.insert(core.siblings[0]);
+
+    // MAX - main - iouring
+    size_t PRODUCERS = target_cores.size() - 2;
     // this should be a ratio for MAX_HW_CORES
-    constexpr size_t LINES_PER_PRODUCER = (1 << 10) * 768;
-    constexpr size_t QUEUE_CAPACITY = (1 << 10) * 16;
-    constexpr size_t MAX_IO_BYTES = (1 << 20) * 2;
+    constexpr size_t LINES_PER_PRODUCER = (1 << 20) * 4;
+#if QUEUE_TYPE != 2
+    constexpr size_t QUEUE_CAPACITY = (1 << 10) * 32;
+#endif
+    constexpr size_t MAX_IO_BYTES = (1 << 10) * 1024 * 2;
     constexpr size_t MIN_LEN = 128;
     constexpr size_t MAX_LINE_LEN = (1 << 10) * 2;
 #else
     constexpr size_t PRODUCERS = 3;
     constexpr size_t LINES_PER_PRODUCER = (1 << 5);
+#if QUEUE_TYPE != 2
     constexpr size_t QUEUE_CAPACITY = 512;
+#endif
     constexpr size_t MAX_IO_BYTES = (1 << 10);
     constexpr size_t MIN_LEN = 64;
     constexpr size_t MAX_LINE_LEN = 256;
 #endif
-    constexpr size_t TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
+    size_t TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
     constexpr size_t IO_BUFFERS = 2;
     constexpr auto TARGET_FLUSH =
         std::chrono::nanoseconds(static_cast<uint64_t>(1e9 / 30));
+    constexpr size_t PREALLOC_CHUNK = MAX_IO_BYTES << 8;
+    constexpr size_t ALLOC_WATERMARK = MAX_IO_BYTES << 1;
 
     struct Message {
+#if QUEUE_TYPE == 2
+        Node node;
+#endif
         uint8_t *data;
         const size_t size;
+
+        Message(uint8_t *data, const size_t size) noexcept
+            :
+#if QUEUE_TYPE == 2
+              node(nullptr),
+#endif
+              data(data), size(size) {};
 
         std::span<uint8_t> bytes() noexcept { return {data, size}; }
 
         std::span<const uint8_t> bytes() const noexcept { return {data, size}; }
     };
 
+    struct ByteArrDeleter {
+        void operator()(void *const ptr) const {
+            if (ptr)
+                delete[] reinterpret_cast<uint8_t *>(ptr);
+        }
+    };
+
 #if BENCHMARK == 1
     struct Stats {
+        uint64_t falloc_total_ns = 0;
+        uint64_t falloc_min_ns = UINT64_MAX;
+        uint64_t falloc_max_ns = 0;
+
         uint64_t queue_total_ns = 0;
         uint64_t queue_min_ns = UINT64_MAX;
         uint64_t queue_max_ns = 0;
@@ -134,6 +173,10 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
         uint64_t memcpy_total_ns = 0;
         uint64_t memcpy_min_ns = UINT64_MAX;
         uint64_t memcpy_max_ns = 0;
+
+        uint64_t free_total_ns = 0;
+        uint64_t free_min_ns = UINT64_MAX;
+        uint64_t free_max_ns = 0;
 
         uint64_t push_io_total_ns = 0;
         uint64_t push_io_min_ns = UINT64_MAX;
@@ -143,6 +186,9 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
         uint64_t pop_io_min_ns = UINT64_MAX;
         uint64_t pop_io_max_ns = 0;
 
+        std::vector<uint64_t> msg_alloc_samples;
+        std::vector<uint64_t> falloc_samples;
+        std::vector<uint64_t> free_samples;
         std::vector<uint64_t> queue_samples;
         std::vector<uint64_t> memcpy_samples;
         std::vector<uint64_t> push_io_samples;
@@ -154,29 +200,34 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
         uint64_t total_batch_lines = 0;
         uint64_t max_batch_lines = 0;
 
-        Stats(const size_t capacity) {
-            queue_samples.reserve(capacity);
-            memcpy_samples.reserve(capacity);
-            push_io_samples.reserve(capacity);
-            pop_io_samples.reserve(capacity);
+        std::vector<std::vector<uint64_t>> producer_enqueue_samples;
+
+        Stats(const size_t consumer_capacity, const size_t producers_n,
+              const size_t producer_capacity, const size_t max_line_len) {
+
+            falloc_samples.reserve(max_line_len * consumer_capacity /
+                                   ALLOC_WATERMARK);
+
+            queue_samples.reserve(consumer_capacity);
+            memcpy_samples.reserve(consumer_capacity);
+            free_samples.reserve(consumer_capacity);
+            push_io_samples.reserve(consumer_capacity);
+            pop_io_samples.reserve(consumer_capacity);
+
+            producer_enqueue_samples =
+                std::vector<std::vector<uint64_t>>(producers_n);
+            for (auto samples : producer_enqueue_samples)
+                samples.reserve(producer_capacity);
         }
     };
 
-    const auto percentile = [](std::vector<uint64_t> values,
-                               const double p) -> uint64_t {
-#if RUN_CHECKS
-        CHECK(!values.empty());
-#endif
-
-        const size_t index =
-            static_cast<size_t>(p * static_cast<double>(values.size() - 1));
-
-        return values[index];
-    };
+    Stats stats(TOTAL_LINES, PRODUCERS, LINES_PER_PRODUCER, MAX_LINE_LEN);
+#elif BENCHMARK == 2
+    uint64_t byte_count = 0;
 #endif
 
     const auto make_line =
-        [](std::mt19937_64 &rng) -> std::unique_ptr<Message> {
+        [](std::mt19937_64 &rng) -> std::unique_ptr<Message, ByteArrDeleter> {
         std::uniform_int_distribution<size_t> length_dist(MIN_LEN,
                                                           MAX_LINE_LEN);
 
@@ -193,7 +244,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
             message->data[i] = static_cast<char>(character_dist(rng));
         message->data[len - 1] = '\n';
 
-        return std::unique_ptr<Message>(message);
+        return std::unique_ptr<Message, ByteArrDeleter>(message);
     };
 
     auto evented_r = EventedIo::create(1, IORING_SETUP_SINGLE_ISSUER);
@@ -215,52 +266,51 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 #if RUN_CHECKS
     CHECK(reg_fd_r);
 #endif
-    tmp_fd.release();
     constexpr fd_t tmp_fd_idx = 0;
 
-#if SLOTTEDQ == 1
-    MPSCQSlotted<Message, QUEUE_CAPACITY> queue{};
+#if QUEUE_TYPE == 1
+    MPSCQSlotted<Message, QUEUE_CAPACITY, ByteArrDeleter> queue{};
+#elif QUEUE_TYPE == 2
+    UnboundedLinkedMPSCQ<Message, ByteArrDeleter> queue{};
 #else
-    auto queue_r = MPSCQueue<Message>::create(QUEUE_CAPACITY);
+    auto queue_r = MPSCQueue<Message, ByteArrDeleter>::create(QUEUE_CAPACITY);
 #if RUN_CHECKS
     REQUIRE(queue_r.has_value());
 #endif
     auto queue = std::move(queue_r.value());
 #endif
 
+#if RUN_CHECKS
     std::vector<uint8_t> expected;
     expected.reserve(TOTAL_LINES * MAX_LINE_LEN);
+#endif
 
     std::atomic<size_t> producers_finished = 0;
-    std::array<std::jthread, PRODUCERS> producers;
-#if BENCHMARK == 1
-    std::array<std::vector<uint64_t>, PRODUCERS> producer_enqueue_samples;
-    for (auto samples : producer_enqueue_samples)
-        samples.reserve(LINES_PER_PRODUCER);
-
+    std::vector<std::jthread> producers;
+    producers.reserve(PRODUCERS);
+#if BENCHMARK
     CHECK(SetPriorityResult::Success == set_priority(-20));
-    CHECK(SetCpuAffinityResult::Success ==
-          set_cpu_afinity(std::ranges::iota_view(
-              static_cast<size_t>(0), static_cast<size_t>(MAX_HW_CORES))));
+    auto cpu_view =
+        std::views::iota(*target_cores.begin(), *target_cores.rbegin() + 1) |
+        std::views::filter(
+            [&target_cores](size_t x) { return target_cores.contains(x); });
+    CHECK(SetCpuAffinityResult::Success == set_cpu_afinity(cpu_view));
 
-    std::barrier ready(PRODUCERS + 1);
     const size_t main_cpu = static_cast<size_t>(sched_getcpu());
-    REQUIRE(main_cpu >= 0);
-
     const auto pick_cpu = [main_cpu](const size_t target) -> size_t {
         return target + (target >= main_cpu ? 1 : 0);
     };
 #endif
 
+    std::barrier ready(PRODUCERS + 1);
     for (size_t producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
-        producers[producer_id] = std::jthread([&, producer_id] {
-#if BENCHMARK == 1
+        producers.emplace_back([&, producer_id] {
+#if BENCHMARK
             CHECK(SetCpuAffinityResult::Success ==
                   set_cpu_afinity(pick_cpu(producer_id)));
             CHECK(SetPriorityResult::Success == set_priority(-20));
-
-            ready.arrive_and_wait();
 #endif
+            ready.arrive_and_wait();
             std::mt19937_64 rng(0x8f3a21c7d94e6b5ULL + producer_id);
 
             for (size_t line = 0; line < LINES_PER_PRODUCER; ++line) {
@@ -268,13 +318,17 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 #if BENCHMARK == 1
                 const auto enqueue_start = clock::now();
 #endif
-#if SLOTTEDQ == 1
+#if QUEUE_TYPE == 1
                 while (!queue.enqueue(std::move(message))) {
-#else
-                while (!queue->enqueue(std::move(message))) {
-#endif
                     continue;
                 }
+#elif QUEUE_TYPE == 2
+                queue.enqueue(std::move(message));
+#else
+                while (!queue->enqueue(std::move(message))) {
+                    continue;
+                }
+#endif
 #if BENCHMARK == 1
                 const auto enqueue_completed = clock::now();
                 const uint64_t enqueue_latency = static_cast<uint64_t>(
@@ -282,7 +336,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
                         enqueue_completed - enqueue_start)
                         .count());
 
-                producer_enqueue_samples[producer_id].push_back(
+                stats.producer_enqueue_samples[producer_id].push_back(
                     enqueue_latency);
 #endif
             }
@@ -310,20 +364,16 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
     std::array<uint64_t, IO_BUFFERS> io_bytes{};
     std::array<bool, IO_BUFFERS> in_flight{};
 
-#if BENCHMARK == 1
-    Stats stats(TOTAL_LINES);
-#elif BENCHMARK == 2
-    uint64_t byte_count = 0;
-#endif
     uint64_t file_offset = 0;
     size_t active_buffer = 0;
     size_t consumed_lines = 0;
-    std::unique_ptr<Message> overflow = nullptr;
+    std::unique_ptr<Message, ByteArrDeleter> overflow = nullptr;
+    size_t last_expand = 0;
 
+    ready.arrive_and_wait();
 #if BENCHMARK
     const auto benchmark_start = clock::now();
 #endif
-    ready.arrive_and_wait();
     while (consumed_lines < TOTAL_LINES) {
 #if RUN_CHECKS
         CHECK(!in_flight[active_buffer]);
@@ -335,6 +385,33 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
         auto buffer_iter = buffers[active_buffer].begin();
         const auto collection_start = clock::now();
 
+        if (last_expand - file_offset < ALLOC_WATERMARK) {
+#if BENCHMARK == 1
+            const auto falloc_start = clock::now();
+#endif
+#if RUN_CHECKS == 1
+            auto rc =
+#endif
+                fallocate(tmp_fd.get(), FALLOC_FL_KEEP_SIZE, last_expand,
+                          PREALLOC_CHUNK);
+#if BENCHMARK == 1
+            const auto falloc_end = clock::now();
+            const uint64_t falloc_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    falloc_end - falloc_start)
+                    .count());
+
+            stats.falloc_total_ns += falloc_ns;
+            stats.falloc_min_ns = std::min(stats.falloc_min_ns, falloc_ns);
+            stats.falloc_max_ns = std::max(stats.falloc_max_ns, falloc_ns);
+            stats.falloc_samples.push_back(falloc_ns);
+#endif
+#if RUN_CHECKS == 1
+            CHECK(rc == 0);
+#endif
+            last_expand += PREALLOC_CHUNK;
+        }
+
         while ((clock::now() - collection_start) < TARGET_FLUSH &&
                io_bytes[active_buffer] < MAX_IO_BYTES &&
                consumed_lines < TOTAL_LINES) {
@@ -342,12 +419,15 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 #if BENCHMARK == 1
             const auto queue_start = clock::now();
 #endif
-            std::unique_ptr<Message> message;
+            std::unique_ptr<Message, ByteArrDeleter> message;
             if (!overflow.get()) [[likely]]
-#if SLOTTEDQ == 1
+#if QUEUE_TYPE == 1
+                message = queue.dequeue();
+#elif QUEUE_TYPE == 2
                 message = queue.dequeue();
 #else
-                message = queue->dequeue();
+                message = std::unique_ptr<Message, ByteArrDeleter>(
+                    queue->dequeue().release(), ByteArrDeleter());
 #endif
             else
                 message = std::move(overflow);
@@ -397,19 +477,33 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 
                 stats.memcpy_total_ns += memcpy_ns;
                 stats.memcpy_min_ns = std::min(stats.memcpy_min_ns, memcpy_ns);
-                stats.memcpy_max_ns = std::max(stats.memcpy_max_ns, queue_ns);
+                stats.memcpy_max_ns = std::max(stats.memcpy_max_ns, memcpy_ns);
                 stats.memcpy_samples.push_back(memcpy_ns);
+
 #elif BENCHMARK == 2
                 byte_count += data_span.size();
 #endif
                 buffer_iter += data_span.size();
                 ++line_count[active_buffer];
                 ++consumed_lines;
-            }
 
-            // Message free happens here, very very frequently, curiously
-            // a pmr pool doesnt help at all, im wondering if the figures
-            // change if I do it myself
+#if BENCHMARK == 1
+                const auto free_start = clock::now();
+#endif
+                message.reset();
+#if BENCHMARK == 1
+                const auto free_end = clock::now();
+                const uint64_t free_ns = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        free_end - free_start)
+                        .count());
+
+                stats.free_total_ns += free_ns;
+                stats.free_min_ns = std::min(stats.free_min_ns, free_ns);
+                stats.free_max_ns = std::max(stats.free_max_ns, free_ns);
+                stats.free_samples.push_back(free_ns);
+#endif
+            }
         }
 
         // this can only happen after produces finish/break
@@ -427,7 +521,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 #if RUN_CHECKS
             const auto pop_r =
 #endif
-                evented->pop_writev();
+                evented->pop_write();
 #if BENCHMARK == 1
             const auto pop_completed = clock::now();
             const uint64_t pop_latency = static_cast<uint64_t>(
@@ -457,7 +551,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
                 tmp_fd_idx,
                 std::span<const uint8_t>{buffers[active_buffer].data(),
                                          io_bytes[active_buffer]},
-                file_offset, IOSQE_FIXED_FILE, true, active_buffer);
+                file_offset, IOSQE_FIXED_FILE, 0, true, active_buffer);
 #if BENCHMARK == 1
         const auto push_completed = clock::now();
         const uint64_t push_latency = static_cast<uint64_t>(
@@ -504,7 +598,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 #if RUN_CHECKS
         const auto pop_r =
 #endif
-            evented->pop_writev();
+            evented->pop_write();
 
 #if BENCHMARK == 1
         const auto completed = clock::now();
@@ -581,7 +675,7 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
             benchmark_completed - benchmark_start)
             .count());
 
-    const double elapsed_seconds = static_cast<double>(elapsed_ns) / 1.0e9;
+    const double elapsed_seconds = static_cast<double>(elapsed_ns) / 1.0e9L;
 
     const double lines_per_second =
         static_cast<double>(consumed_lines) / elapsed_seconds;
@@ -590,8 +684,24 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
     REQUIRE(!stats.pop_io_samples.empty());
     REQUIRE(!stats.queue_samples.empty());
 
+    const auto percentile = [](std::vector<uint64_t> values,
+                               const double p) -> uint64_t {
+#if RUN_CHECKS
+        CHECK(!values.empty());
+#endif
+
+        const size_t index =
+            static_cast<size_t>(p * static_cast<double>(values.size() - 1));
+
+        return values[index];
+    };
+
     const double mib_per_second =
         static_cast<double>(stats.bytes) / elapsed_seconds / (1 << 20);
+
+    const double avg_falloc_ns =
+        static_cast<double>(stats.falloc_total_ns) /
+        static_cast<double>(stats.falloc_samples.size());
 
     const double avg_push_io_ns =
         static_cast<double>(stats.push_io_total_ns) /
@@ -602,6 +712,13 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 
     const double avg_queue_ns = static_cast<double>(stats.queue_total_ns) /
                                 static_cast<double>(stats.queue_samples.size());
+
+    const double avg_memcpy_ns =
+        static_cast<double>(stats.memcpy_total_ns) /
+        static_cast<double>(stats.memcpy_samples.size());
+
+    const double avg_free_ns = static_cast<double>(stats.free_total_ns) /
+                               static_cast<double>(stats.free_samples.size());
 
     const double avg_batch_lines =
         static_cast<double>(consumed_lines) / static_cast<double>(stats.writes);
@@ -614,20 +731,22 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
     const auto reduce_as_micros =
         [](const std::vector<uint64_t> samples) -> uint64_t {
         return std::transform_reduce(
-            samples.begin(), samples.end(), 0, std::plus<>{},
-            [](const uint64_t ns) { return static_cast<double>(ns) / 1e3; });
+            samples.begin(), samples.end(), 0.0L, std::plus<>{},
+            [](const uint64_t ns) { return static_cast<double>(ns) / 1.0e3L; });
     };
 
+    std::sort(stats.falloc_samples.begin(), stats.falloc_samples.end());
     std::sort(stats.queue_samples.begin(), stats.queue_samples.end());
     std::sort(stats.memcpy_samples.begin(), stats.memcpy_samples.end());
+    std::sort(stats.free_samples.begin(), stats.free_samples.end());
     std::sort(stats.pop_io_samples.begin(), stats.pop_io_samples.end());
     std::sort(stats.push_io_samples.begin(), stats.push_io_samples.end());
 
     uint64_t enqueue_max_ns = 0;
     uint64_t enqueue_min_ns = UINT64_MAX;
     std::vector<uint64_t> enqueue_samples;
-    enqueue_samples.reserve(TOTAL_LINES);
-    for (auto samples : producer_enqueue_samples) {
+    enqueue_samples.reserve(LINES_PER_PRODUCER);
+    for (auto samples : stats.producer_enqueue_samples) {
         enqueue_max_ns = std::max(enqueue_max_ns, std::ranges::max(samples));
         enqueue_min_ns = std::min(enqueue_min_ns, std::ranges::min(samples));
         enqueue_samples.insert(enqueue_samples.end(),
@@ -643,109 +762,144 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
     std::sort(enqueue_samples.begin(), enqueue_samples.end());
 
     report << "\n"
+           << std::fixed << std::setprecision(2)
            << "MPSC -> dual-buffer WRITEV\n"
            << "==========================\n"
            << "producers\t" << PRODUCERS << "\n"
            << "lines\t\t" << consumed_lines << "\n"
-           << "bytes\t\t" << std::fixed << std::setprecision(2)
-           << stats.bytes * (1.0 / (1 << 20)) << " MiB\n"
+           << "bytes\t\t" << stats.bytes * (1.0L / (1 << 30)) << " GiB\n"
            << "\n"
 
            << "throughput\n"
            << "----------\n"
-           << "elapsed\t\t" << std::fixed << std::setprecision(2)
-           << elapsed_ns / 1.0e6 << " ms\n"
-           << "lines/sec\t" << std::fixed << std::setprecision(0)
-           << lines_per_second << "\n"
-           << "MiB/sec\t\t" << std::fixed << std::setprecision(2)
-           << mib_per_second << "\n"
+           << "elapsed\t\t" << elapsed_ns / 1.0e9L << " s\n"
+           << "lines/sec\t" << lines_per_second << "\n"
+           << "MiB/sec\t\t" << mib_per_second << "\n"
            << "\n"
 
            << "batching\n"
            << "--------\n"
            << "writes\t\t" << stats.writes << "\n"
-           << "avg lines\t" << std::fixed << std::setprecision(2)
-           << avg_batch_lines << "\n"
+           << "avg lines\t" << avg_batch_lines << "\n"
            << "max lines\t" << stats.max_batch_lines << "\n"
-           << "avg bytes\t" << std::fixed << std::setprecision(2)
-           << avg_write_bytes / 1024.0 << " KiB\n"
+           << "avg bytes\t" << avg_write_bytes / 1024.0L << " KiB\n"
+           << "\n"
+
+           << "falloc latency\n"
+           << "-------------\n"
+           << "sum\t\t\t" << reduce_as_micros(stats.falloc_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t\t" << avg_falloc_ns << " ns\n"
+           << "min\t\t\t" << stats.falloc_min_ns << " ns\n"
+           << "p50\t\t\t" << percentile(stats.falloc_samples, 0.50) << " ns\n"
+           << "p90\t\t\t" << percentile(stats.falloc_samples, 0.90) << " ns\n"
+           << "p99\t\t\t" << percentile(stats.falloc_samples, 0.99) << " ns\n"
+           << "p99.9\t\t\t" << percentile(stats.falloc_samples, 0.999) / 1.0e6L
+           << " ms\n"
+           << "p99.99\t\t\t"
+           << percentile(stats.falloc_samples, 0.9999) / 1.0e6L << " ms\n"
+           << "p99.999\t\t\t"
+           << percentile(stats.falloc_samples, 0.99999) / 1.0e6L << " ms\n"
+           << "max\t\t\t" << stats.falloc_max_ns / 1.0e6L << " ms\n"
            << "\n"
 
            << "enqueue latency\n"
            << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(enqueue_samples) << " µs\n"
-           << "avg\t\t\t" << std::fixed << std::setprecision(0)
-           << avg_enqueue_ns << " ns\n"
+           << "sum\t\t\t" << reduce_as_micros(enqueue_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t\t" << avg_enqueue_ns << " ns\n"
            << "min\t\t\t" << enqueue_min_ns << " ns\n"
            << "p50\t\t\t" << percentile(enqueue_samples, 0.50) << " ns\n"
            << "p90\t\t\t" << percentile(enqueue_samples, 0.90) << " ns\n"
            << "p99\t\t\t" << percentile(enqueue_samples, 0.99) << " ns\n"
-           << "p99.9\t\t\t" << percentile(enqueue_samples, 0.999) << " ns\n"
-           << "p99.99\t\t\t" << percentile(enqueue_samples, 0.9999) << " ns\n"
-           << "p99.999\t\t\t" << percentile(enqueue_samples, 0.99999) << " ns\n"
-           << "max\t\t\t" << enqueue_max_ns << " ns\n"
+           << "p99.9\t\t\t" << percentile(enqueue_samples, 0.999) / 1.0e6L
+           << " ms\n"
+           << "p99.99\t\t\t" << percentile(enqueue_samples, 0.9999) / 1.0e6L
+           << " ms\n"
+           << "p99.999\t\t\t" << percentile(enqueue_samples, 0.99999) / 1.0e6L
+           << " ms\n"
+           << "max\t\t\t" << enqueue_max_ns / 1.0e6L << " ms\n"
            << "\n"
 
            << "dequeue latency\n"
            << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.queue_samples) << " µs\n"
-           << "avg\t\t\t" << std::fixed << std::setprecision(0) << avg_queue_ns
-           << " ns\n"
+           << "sum\t\t\t" << reduce_as_micros(stats.queue_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t\t" << avg_queue_ns << " ns\n"
            << "min\t\t\t" << stats.queue_min_ns << " ns\n"
            << "p50\t\t\t" << percentile(stats.queue_samples, 0.50) << " ns\n"
            << "p90\t\t\t" << percentile(stats.queue_samples, 0.90) << " ns\n"
            << "p99\t\t\t" << percentile(stats.queue_samples, 0.99) << " ns\n"
-           << "p99.9999\t\t" << percentile(stats.queue_samples, 0.999999)
-           << " ns\n"
-           << "max\t\t\t" << stats.queue_max_ns << " ns\n"
+           << "p99.9999\t\t"
+           << percentile(stats.queue_samples, 0.999999) / 1.0e3L << " µs\n"
+           << "max\t\t\t" << stats.queue_max_ns / 1.0e3L << " µs\n"
            << "\n"
 
            << "memcpy latency\n"
            << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.memcpy_samples) << " µs\n"
-           << "avg\t\t\t" << std::fixed << std::setprecision(0) << avg_queue_ns
-           << " ns\n"
+           << "sum\t\t\t" << reduce_as_micros(stats.memcpy_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t\t" << avg_memcpy_ns << " ns\n"
            << "min\t\t\t" << stats.memcpy_min_ns << " ns\n"
            << "p50\t\t\t" << percentile(stats.memcpy_samples, 0.50) << " ns\n"
            << "p90\t\t\t" << percentile(stats.memcpy_samples, 0.90) << " ns\n"
            << "p99\t\t\t" << percentile(stats.memcpy_samples, 0.99) << " ns\n"
-           << "p99.9999\t\t" << percentile(stats.memcpy_samples, 0.999999)
-           << " ns\n"
-           << "max\t\t\t" << stats.memcpy_max_ns << " ns\n"
+           << "p99.9999\t\t"
+           << percentile(stats.memcpy_samples, 0.999999) / 1.0e3L << " µs\n"
+           << "max\t\t\t" << stats.memcpy_max_ns / 1.0e3L << " µs\n"
+           << "\n"
+
+           << "free latency\n"
+           << "-------------\n"
+           << "sum\t\t\t" << reduce_as_micros(stats.free_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t\t" << avg_free_ns << " ns\n"
+           << "min\t\t\t" << stats.free_min_ns << " ns\n"
+           << "p50\t\t\t" << percentile(stats.free_samples, 0.50) << " ns\n"
+           << "p90\t\t\t" << percentile(stats.free_samples, 0.90) << " ns\n"
+           << "p99\t\t\t" << percentile(stats.free_samples, 0.99) << " ns\n"
+           << "p99.9999\t\t"
+           << percentile(stats.free_samples, 0.999999) / 1.0e3L << " µs\n"
+           << "max\t\t\t" << stats.free_max_ns / 1.0e3L << " µs\n"
            << "\n"
 
            << "I/O latency (pop)\n"
            << "-----------\n"
-           << "sum\t\t" << reduce_as_micros(stats.pop_io_samples) << " µs\n"
-           << "avg\t\t" << std::fixed << std::setprecision(0) << avg_pop_io_ns
-           << " ns\n"
+           << "sum\t\t" << reduce_as_micros(stats.pop_io_samples) / 1.0e6L
+           << " s\n"
+           << "avg\t\t" << avg_pop_io_ns / 1.0e3L << " µs\n"
            << "min\t\t" << stats.pop_io_min_ns << " ns\n"
-           << "p50\t\t" << percentile(stats.pop_io_samples, 0.50) << " ns\n"
-           << "p90\t\t" << percentile(stats.pop_io_samples, 0.90) << " ns\n"
-           << "p99\t\t" << percentile(stats.pop_io_samples, 0.99) << " ns\n"
-           << "p99.9\t\t" << percentile(stats.pop_io_samples, 0.999) << " ns\n"
-           << "p99.99\t\t" << percentile(stats.pop_io_samples, 0.9999)
-           << " ns\n"
-           << "p99.999\t\t" << percentile(stats.pop_io_samples, 0.99999)
-           << " ns\n"
-           << "max\t\t" << stats.pop_io_max_ns << " ns\n"
+           << "p50\t\t" << percentile(stats.pop_io_samples, 0.50) / 1.0e3L
+           << " µs\n"
+           << "p90\t\t" << percentile(stats.pop_io_samples, 0.90) / 1.0e3L
+           << " µs\n"
+           << "p99\t\t" << percentile(stats.pop_io_samples, 0.99) / 1.0e3L
+           << " µs\n"
+           << "p99.9\t\t" << percentile(stats.pop_io_samples, 0.999) / 1.0e6L
+           << " ms\n"
+           << "p99.99\t\t" << percentile(stats.pop_io_samples, 0.9999) / 1.0e6L
+           << " ms\n"
+           << "p99.999\t\t"
+           << percentile(stats.pop_io_samples, 0.99999) / 1.0e6L << " ms\n"
+           << "max\t\t" << stats.pop_io_max_ns / 1.0e6L << " ms\n"
            << "\n"
 
            << "I/O latency (push)\n"
            << "-----------\n"
-           << "sum\t\t" << reduce_as_micros(stats.push_io_samples) << " µs\n"
-           << "avg\t\t" << std::fixed << std::setprecision(0) << avg_push_io_ns
-           << " ns\n"
+           << "sum\t\t" << reduce_as_micros(stats.push_io_samples) / 1.0e3L
+           << " ms\n"
+           << "avg\t\t" << avg_push_io_ns << " ns\n"
            << "min\t\t" << stats.push_io_min_ns << " ns\n"
            << "p50\t\t" << percentile(stats.push_io_samples, 0.50) << " ns\n"
            << "p90\t\t" << percentile(stats.push_io_samples, 0.90) << " ns\n"
            << "p99\t\t" << percentile(stats.push_io_samples, 0.99) << " ns\n"
-           << "p99.9\t\t" << percentile(stats.push_io_samples, 0.999) << " ns\n"
-           << "p99.99\t\t" << percentile(stats.push_io_samples, 0.9999)
-           << " ns\n"
-           << "p99.999\t\t" << percentile(stats.push_io_samples, 0.99999)
-           << " ns\n"
-           << "max\t\t" << stats.push_io_max_ns << " ns\n";
+           << "p99.9\t\t" << percentile(stats.push_io_samples, 0.999) / 1.0e3L
+           << " µs\n"
+           << "p99.99\t\t" << percentile(stats.push_io_samples, 0.9999) / 1.0e3L
+           << " µs\n"
+           << "p99.999\t\t"
+           << percentile(stats.push_io_samples, 0.99999) / 1.0e3L << " µs\n"
+           << "max\t\t" << stats.push_io_max_ns / 1.0e3L << " µs\n";
 
     MESSAGE(report.str());
 #elif BENCHMARK == 2
@@ -754,22 +908,19 @@ TEST_CASE("MPSC -> dual-buffer WRITEV") {
 
     std::ostringstream report;
     report << "\n"
+           << std::fixed << std::setprecision(2)
            << "MPSC -> dual-buffer WRITEV\n"
            << "==========================\n"
            << "producers\t" << PRODUCERS << "\n"
            << "lines\t\t" << consumed_lines << "\n"
-           << "bytes\t\t" << std::fixed << std::setprecision(2)
-           << byte_count * (1.0 / (1 << 20)) << " MiB\n"
+           << "bytes\t\t" << byte_count * (1.0L / (1 << 30)) << " GiB\n"
            << "\n"
 
            << "throughput\n"
            << "----------\n"
-           << "elapsed\t\t" << std::fixed << std::setprecision(2)
-           << elapsed_ns / 1.0e6 << " ms\n"
-           << "lines/sec\t" << std::fixed << std::setprecision(0)
-           << lines_per_second << "\n"
-           << "MiB/sec\t\t" << std::fixed << std::setprecision(2)
-           << mib_per_second << "\n";
+           << "elapsed\t\t" << elapsed_ns / 1.0e9L << " s\n"
+           << "lines/sec\t" << lines_per_second << "\n"
+           << "MiB/sec\t\t" << mib_per_second << "\n";
     MESSAGE(report.str());
 #endif
 #endif

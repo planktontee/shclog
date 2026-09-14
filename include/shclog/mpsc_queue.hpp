@@ -10,6 +10,7 @@
 #include <expected>
 #include <memory>
 #include <new>
+#include <utility>
 
 /* Adapted from https://github.com/dbittman/waitfree-mpsc-queue/tree/master
     Changes:
@@ -30,7 +31,7 @@
 namespace shclog::mpsc_queue {
 enum CreateError { InvalidCapacity, AllocationFailed };
 
-template <typename T>
+template <typename T, typename Deleter = std::default_delete<T>>
 struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
   private:
     align::CachePadAlign<std::atomic<size_t>> count;
@@ -46,7 +47,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
           buf_mask(capacity - 1), max(capacity) {}
 
   public:
-    static std::expected<std::unique_ptr<MPSCQueue<T>>, CreateError>
+    static std::expected<std::unique_ptr<MPSCQueue<T, Deleter>>, CreateError>
     create(const size_t capacity) noexcept {
         if (capacity < 2 || (capacity & (capacity - 1)) != 0) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::InvalidCapacity);
@@ -60,8 +61,8 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         if (!buf) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::AllocationFailed);
 
-        auto queue = std::unique_ptr<MPSCQueue<T>>(
-            new (std::nothrow) MPSCQueue<T>(capacity, std::move(buf)));
+        auto queue = std::unique_ptr<MPSCQueue<T, Deleter>>(
+            new (std::nothrow) MPSCQueue<T, Deleter>(capacity, std::move(buf)));
         if (!queue) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::AllocationFailed);
 
@@ -75,11 +76,11 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
     MPSCQueue &operator=(MPSCQueue &&) = default;
 
     ~MPSCQueue() noexcept {
-        for (auto item = dequeue(); item; item = dequeue()) {
+        while (auto item = dequeue()) {
         }
     };
 
-    bool enqueue(std::unique_ptr<T> &&v) noexcept {
+    bool enqueue(std::unique_ptr<T, Deleter> &&v) noexcept {
         if (!v) [[unlikely]]
             return false;
 
@@ -104,7 +105,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         return true;
     }
 
-    std::unique_ptr<T> dequeue() noexcept {
+    std::unique_ptr<T, Deleter> dequeue() noexcept {
         const auto ret = buffer.value[tail.value].exchange(
             nullptr, std::memory_order_acquire);
 
@@ -116,7 +117,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         // const size_t r = count.value.fetch_sub(1, std::memory_order_release);
         // assert(r > 0);
         count.value.fetch_sub(1, std::memory_order_release);
-        return std::unique_ptr<T>(ret);
+        return std::unique_ptr<T, Deleter>(ret);
     }
 
     size_t size() const noexcept { return count.value; }
@@ -124,7 +125,9 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
     size_t capacity() const noexcept { return max; }
 };
 
-template <typename T, size_t N> struct MPSCQSlotted {
+// TODO: remove size from template, add more checks
+template <typename T, size_t N, typename Deleter = std::default_delete<T>>
+struct MPSCQSlotted {
   private:
     struct Cell {
         align::CachePadAlign<std::atomic<size_t>> seq;
@@ -149,7 +152,7 @@ template <typename T, size_t N> struct MPSCQSlotted {
         std::atomic_thread_fence(std::memory_order_release);
     }
 
-    bool enqueue(std::unique_ptr<T> &&v) noexcept {
+    bool enqueue(std::unique_ptr<T, Deleter> &&v) noexcept {
         // size_t pos = head.value.load(std::memory_order_relaxed);
         size_t pos = head.value.fetch_add(1, std::memory_order_relaxed);
 
@@ -179,7 +182,7 @@ template <typename T, size_t N> struct MPSCQSlotted {
         return true;
     }
 
-    std::unique_ptr<T> dequeue() noexcept {
+    std::unique_ptr<T, Deleter> dequeue() noexcept {
         Cell *slot = &buffer[tail.value & MASK];
 
         const size_t seq = slot->seq.value.load(std::memory_order_acquire);
@@ -192,7 +195,106 @@ template <typename T, size_t N> struct MPSCQSlotted {
         T *v = slot->data;
         slot->seq.value.store(tail.value + N, std::memory_order_release);
         tail.value++;
-        return std::unique_ptr<T>(v);
+        return std::unique_ptr<T, Deleter>(v);
+    }
+};
+
+struct Node {
+    std::atomic<Node *> next{nullptr};
+};
+
+template <typename T>
+concept HasNodeMember =
+    std::is_same_v<decltype(std::declval<T &>().node), Node>;
+
+template <typename T> inline T *container_of(Node *n) noexcept {
+    static_assert(HasNodeMember<T>, "T must have a member Node node;");
+    auto offset = offsetof(T, node);
+    return reinterpret_cast<T *>(reinterpret_cast<uint8_t *>(n) - offset);
+}
+
+// TODO: add more checks
+template <typename T, typename Deleter = std::default_delete<T>>
+struct UnboundedLinkedMPSCQ {
+    static_assert(HasNodeMember<T>, "T must have a member Node node;");
+
+  public:
+    UnboundedLinkedMPSCQ() noexcept {
+        stub.next.store(nullptr, std::memory_order::relaxed);
+        head.store(&stub, std::memory_order_relaxed);
+        tail = &stub;
+        std::atomic_thread_fence(std::memory_order_release);
+    }
+
+    ~UnboundedLinkedMPSCQ() {
+        while (auto item = dequeue()) {
+        }
+    }
+
+    UnboundedLinkedMPSCQ(const UnboundedLinkedMPSCQ &) = delete;
+    UnboundedLinkedMPSCQ &operator=(const UnboundedLinkedMPSCQ &) = delete;
+    UnboundedLinkedMPSCQ(UnboundedLinkedMPSCQ &&) = delete;
+    UnboundedLinkedMPSCQ &operator=(UnboundedLinkedMPSCQ &&) = delete;
+
+    void enqueue(std::unique_ptr<T, Deleter> item) noexcept {
+        T *raw = item.release();
+        push(&raw->node);
+    }
+
+    std::unique_ptr<T, Deleter> dequeue() noexcept {
+        Node *node = pop();
+        if (!node)
+            return nullptr;
+        return std::unique_ptr<T, Deleter>(container_of<T>(node));
+    }
+
+  private:
+    std::atomic<Node *> head;
+    Node *tail;
+    Node stub;
+
+    void push(Node *n) noexcept {
+        n->next = nullptr;
+        auto prev = head.exchange(n, std::memory_order_acq_rel);
+        prev->next.store(n, std::memory_order_release);
+    }
+
+    Node *pop() noexcept {
+        Node *local_tail = tail;
+        Node *next = local_tail->next.load(std::memory_order_acquire);
+
+        if (local_tail == &stub) {
+            if (!next)
+                return nullptr;
+
+            local_tail = next;
+            tail = next;
+            next = next->next.load(std::memory_order_acquire);
+        }
+
+        if (next) {
+            tail = next;
+            return local_tail;
+        }
+
+        Node *local_head = head.load(std::memory_order_acquire);
+        if (local_tail != local_head) {
+            // Producer exchanged head but not linked prev->next yet
+            return nullptr;
+        }
+
+        // tail == head, no next, they arent stubs, move next to stub
+        // or something (on race) and re-check
+        push(&stub);
+
+        next = local_tail->next.load(std::memory_order_acquire);
+        if (next) {
+            tail = next;
+            return local_tail;
+        }
+
+        // retriable sync between new push prev->next moving (prev being tail)
+        return nullptr;
     }
 };
 } // namespace shclog::mpsc_queue

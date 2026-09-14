@@ -1,5 +1,6 @@
 #include "shclog/io/file.hpp"
 #include "shclog/io/syscall.hpp"
+#include <asm/unistd_64.h>
 #include <expected>
 #include <fcntl.h>
 #include <linux/openat2.h>
@@ -27,17 +28,51 @@ open(const char *const path, const ::open_how *const how, fd_t cwd) noexcept {
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;
+    case Errno::ACCES:
+    case Errno::PERM:
+    case Errno::ROFS:
+        return std::unexpected(OpenError::AccessDenied);
+    case Errno::BADF:
+        return std::unexpected(OpenError::BadCwd);
+    case Errno::DQUOT:
+    case Errno::MFILE:
+        return std::unexpected(OpenError::QuotaExceeded);
+    case Errno::EXIST:
+        return std::unexpected(OpenError::FileAlreadyExists);
     case Errno::AGAIN:
+    case Errno::BUSY:
+    case Errno::TXTBSY:
         if (how->resolve & RESOLVE_CACHED)
             return std::unexpected(OpenError::RetryableWithoutCache);
-        else if (how->resolve & (RESOLVE_IN_ROOT | RESOLVE_BENEATH))
-            return std::unexpected(OpenError::Retryable);
-        else
-            return std::unexpected(OpenError::Unexpected);
+        return std::unexpected(OpenError::TemporarilyUnavailable);
     case Errno::LOOP:
         return std::unexpected(OpenError::PathContainsLink);
     case Errno::XDEV:
         return std::unexpected(OpenError::PathCrossesMount);
+    case Errno::INVAL:
+    case Errno::TOOBIG:
+    case Errno::FAULT:
+        return std::unexpected(OpenError::InvalidParams);
+    case Errno::OVERFLOW:
+    case Errno::FBIG:
+        return std::unexpected(OpenError::FileIsTooBig);
+    case Errno::INTR:
+        return std::unexpected(OpenError::Terminated);
+    case Errno::ISDIR:
+        return std::unexpected(OpenError::FdIsDir);
+    case Errno::NAMETOOLONG:
+        return std::unexpected(OpenError::PathIsTooLong);
+    case Errno::NFILE:
+        return std::unexpected(OpenError::SystemQuotaExceeded);
+    case Errno::NOENT:
+    case Errno::NXIO:
+        return std::unexpected(OpenError::FileNotFound);
+    case Errno::NOMEM:
+        return std::unexpected(OpenError::OutOfMemory);
+    case Errno::NOSPC:
+        return std::unexpected(OpenError::OutOfSpace);
+    case Errno::NOTDIR:
+        return std::unexpected(OpenError::FdIsNotADir);
     default:
         debug_e_errno();
         return std::unexpected(OpenError::Unexpected);
@@ -95,6 +130,39 @@ std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
     default:
         debug_e_errno();
         return std::unexpected(WritevError::Unexpected);
+    }
+
+    return static_cast<uint64_t>(rc);
+}
+
+std::expected<uint64_t, ReadError>
+pread(const fd_t fd, const std::span<uint8_t> buf, const int64_t offset) {
+    const int64_t rc =
+        ::syscall(__NR_pread64, fd, buf.data(), buf.size(), offset);
+
+    switch (e_errno(rc)) {
+    case Errno::SUCCESS:
+        break;
+    case Errno::FAULT:
+        return std::unexpected(ReadError::BadBuffer);
+    case Errno::BADF:
+        return std::unexpected(ReadError::BadFd);
+    case Errno::AGAIN:
+        return std::unexpected(ReadError::TemporarilyUnavailable);
+    case Errno::SPIPE:
+        return std::unexpected(ReadError::NonSeekableFd);
+    case Errno::INTR:
+        return std::unexpected(ReadError::Terminated);
+    case Errno::ISDIR:
+        return std::unexpected(ReadError::FdIsDir);
+    case Errno::INVAL:
+    case Errno::NXIO:
+    case Errno::OPNOTSUPP:
+    case Errno::OVERFLOW:
+        return std::unexpected(ReadError::InvalidParams);
+    default:
+        debug_e_errno();
+        return std::unexpected(ReadError::Unexpected);
     }
 
     return static_cast<uint64_t>(rc);

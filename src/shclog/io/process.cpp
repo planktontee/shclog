@@ -20,9 +20,9 @@ pthread_t_uwrap(const std::optional<const pthread_t> target) noexcept {
 }
 
 SetPriorityResult set_priority(const int32_t niceness,
-                               const std::optional<pthread_t> target) noexcept {
+                               const std::optional<pid_t> target) noexcept {
     const auto rc = setpriority(
-        PRIO_PROCESS, target.value_or(static_cast<pthread_t>(0)), niceness);
+        PRIO_PROCESS, target.value_or(static_cast<pid_t>(0)), niceness);
 
     if (rc >= 0) [[likely]]
         return SetPriorityResult::Success;

@@ -1,3 +1,5 @@
+#pragma once
+
 #include "shclog/io/mmap.hpp"
 #include <algorithm>
 #include <atomic>
@@ -257,6 +259,7 @@ struct EventedIo {
 
     PushResult push_write(const fd_t fd, const std::span<const uint8_t> buf,
                           const size_t offset, const uint8_t flags = 0,
+                          const uint32_t rw_flags = 0,
                           const bool fixed_buffers = false,
                           const uint32_t buf_idx = 0) noexcept {
         const auto opt_slot = next_sq_slot();
@@ -279,10 +282,12 @@ struct EventedIo {
         if (fixed_buffers) {
             sqe->buf_index = buf_idx;
         }
+        sqe->rw_flags = rw_flags;
 
         return submit(slot, index);
     }
 
+    // TODO: add rw_flags
     PushResult push_writev(const fd_t fd, const std::span<const iovec> iovecs,
                            const size_t offset, const uint8_t flags = 0,
                            const bool fixed_buffers = false,
@@ -359,37 +364,37 @@ struct EventedIo {
             return std::unexpected(rc_r.error());
 
         const auto rc = rc_r.value();
-        if (rc < 0) [[unlikely]]
-            switch (io_uring_errno(rc)) {
-            case Errno::SUCCESS:
-                std::unreachable();
-            case Errno::INVAL:
-            case Errno::FBIG:
-            case Errno::RANGE:
-                return std::unexpected(WritevError::BadIovecsSize);
-            case Errno::AGAIN:
-            case Errno::DQUOT:
-                return std::unexpected(WritevError::TemporarilyUnavailable);
-            case Errno::BADF:
-            case Errno::PIPE:
-            case Errno::DESTADDRREQ:
-            case Errno::NETDOWN:
-            case Errno::NETUNREACH:
-                return std::unexpected(WritevError::BadFd);
-            case Errno::INTR:
-                return std::unexpected(WritevError::Terminated);
-            case Errno::NOSPC:
-                return std::unexpected(WritevError::NoSpaceLeft);
-            case Errno::NXIO:
-                return std::unexpected(WritevError::WriteFailed);
-            case Errno::ACCES:
-                return std::unexpected(WritevError::AccessDenied);
-            default:
-                debug_e_errno(-rc);
-                return std::unexpected(WritevError::Unexpected);
-            }
+        if (rc >= 0) [[likely]]
+            return static_cast<uint32_t>(rc);
 
-        return static_cast<uint32_t>(rc);
+        switch (from_errno(rc)) {
+        case Errno::SUCCESS:
+            std::unreachable();
+        case Errno::INVAL:
+        case Errno::FBIG:
+        case Errno::RANGE:
+            return std::unexpected(WritevError::BadIovecsSize);
+        case Errno::AGAIN:
+        case Errno::DQUOT:
+            return std::unexpected(WritevError::TemporarilyUnavailable);
+        case Errno::BADF:
+        case Errno::PIPE:
+        case Errno::DESTADDRREQ:
+        case Errno::NETDOWN:
+        case Errno::NETUNREACH:
+            return std::unexpected(WritevError::BadFd);
+        case Errno::INTR:
+            return std::unexpected(WritevError::Terminated);
+        case Errno::NOSPC:
+            return std::unexpected(WritevError::NoSpaceLeft);
+        case Errno::NXIO:
+            return std::unexpected(WritevError::WriteFailed);
+        case Errno::ACCES:
+            return std::unexpected(WritevError::AccessDenied);
+        default:
+            debug_e_errno(-rc);
+            return std::unexpected(WritevError::Unexpected);
+        }
     }
 
     enum class WriteError {
@@ -411,37 +416,37 @@ struct EventedIo {
             return std::unexpected(rc_r.error());
 
         const auto rc = rc_r.value();
-        if (rc < 0) [[unlikely]]
-            switch (io_uring_errno(rc)) {
-            case Errno::SUCCESS:
-                std::unreachable();
-            case Errno::INVAL:
-            case Errno::FBIG:
-            case Errno::RANGE:
-                return std::unexpected(WriteError::BadBufferSize);
-            case Errno::AGAIN:
-            case Errno::DQUOT:
-                return std::unexpected(WriteError::TemporarilyUnavailable);
-            case Errno::BADF:
-            case Errno::PIPE:
-            case Errno::DESTADDRREQ:
-            case Errno::NETDOWN:
-            case Errno::NETUNREACH:
-                return std::unexpected(WriteError::BadFd);
-            case Errno::INTR:
-                return std::unexpected(WriteError::Terminated);
-            case Errno::NOSPC:
-                return std::unexpected(WriteError::NoSpaceLeft);
-            case Errno::NXIO:
-                return std::unexpected(WriteError::WriteFailed);
-            case Errno::ACCES:
-                return std::unexpected(WriteError::AccessDenied);
-            default:
-                debug_e_errno(-rc);
-                return std::unexpected(WriteError::Unexpected);
-            }
+        if (rc >= 0) [[likely]]
+            return static_cast<uint32_t>(rc);
 
-        return static_cast<uint32_t>(rc);
+        switch (from_errno(rc)) {
+        case Errno::SUCCESS:
+            std::unreachable();
+        case Errno::INVAL:
+        case Errno::FBIG:
+        case Errno::RANGE:
+            return std::unexpected(WriteError::BadBufferSize);
+        case Errno::AGAIN:
+        case Errno::DQUOT:
+            return std::unexpected(WriteError::TemporarilyUnavailable);
+        case Errno::BADF:
+        case Errno::PIPE:
+        case Errno::DESTADDRREQ:
+        case Errno::NETDOWN:
+        case Errno::NETUNREACH:
+            return std::unexpected(WriteError::BadFd);
+        case Errno::INTR:
+            return std::unexpected(WriteError::Terminated);
+        case Errno::NOSPC:
+            return std::unexpected(WriteError::NoSpaceLeft);
+        case Errno::NXIO:
+            return std::unexpected(WriteError::WriteFailed);
+        case Errno::ACCES:
+            return std::unexpected(WriteError::AccessDenied);
+        default:
+            debug_e_errno(-rc);
+            return std::unexpected(WriteError::Unexpected);
+        }
     }
 
     enum class ReadError {
@@ -460,9 +465,12 @@ struct EventedIo {
             return std::unexpected(rc_r.error());
 
         const auto rc = rc_r.value();
-        switch (io_uring_errno(rc)) {
+        if (rc >= 0)
+            return static_cast<uint32_t>(rc);
+
+        switch (from_errno(rc)) {
         case Errno::SUCCESS:
-            break;
+            std::unreachable();
         case Errno::AGAIN:
             return std::unexpected(ReadError::TemporarilyUnavailable);
         case Errno::BADF:
@@ -475,8 +483,6 @@ struct EventedIo {
             debug_e_errno(-rc);
             return std::unexpected(ReadError::Unexpected);
         }
-
-        return static_cast<uint32_t>(rc);
     }
 
   private:
@@ -526,22 +532,9 @@ struct EventedIo {
           cq_mask(cq_mask), cqes(cqes), is_sq_poll(is_sq_poll),
           registered_ring_fd(std::nullopt) {}
 
-    // params.flags =
-    // kernel thread for sq
-    //     IORING_SETUP_SQPOLL |
-    // single issues (couples with mpsc queue), couples cpu
-    //     IORING_SETUP_SINGLE_ISSUER |
-    // tight control over 'completion' interruptions, which makes sense for
-    // our design
-    //     IORING_SETUP_DEFER_TASKRUN;
     // aggressive non-idle iouring thread
     //     params.sq_thread_idle = 0;
-    //
-    // Same CPU setup (might not be a good idea)
-    // params.flags |= IORING_SETUP_SQ_AFF;
     // params.sq_thread_cpu = logger_io_cpu;
-    //
-    // iopoll might be necessary, lets see the diff later
 
     void unregister_ring_fd() noexcept {
         if (registered_ring_fd.has_value()) {
@@ -583,6 +576,7 @@ struct EventedIo {
             return ring_fd.get();
     }
 
+    // TODO: add draining
     std::expected<const int32_t, PopError> pop_one() {
         auto wait_r = io_uring_enter(
             get_ring_fd(), 0, 1, IORING_ENTER_GETEVENTS | extra_enter_flags());

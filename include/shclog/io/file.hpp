@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdint>
 #include <expected>
 #include <fcntl.h>
@@ -49,10 +51,24 @@ class unique_fd {
 };
 
 enum OpenError {
-    Retryable,
     RetryableWithoutCache,
     PathContainsLink,
     PathCrossesMount,
+    InvalidParams,
+    AccessDenied,
+    TemporarilyUnavailable,
+    QuotaExceeded,
+    SystemQuotaExceeded,
+    FileAlreadyExists,
+    FileNotFound,
+    OutOfMemory,
+    OutOfSpace,
+    FdIsNotADir,
+    FileIsTooBig,
+    Terminated,
+    FdIsDir,
+    PathIsTooLong,
+    BadCwd,
     Unexpected,
 };
 
@@ -61,7 +77,7 @@ std::expected<fd_t, OpenError> open(const char *const path,
                                     const ::open_how *const how,
                                     fd_t cwd = AT_FDCWD) noexcept;
 
-enum OpenMode {
+enum class OpenMode {
     read = O_RDONLY,
     write = O_WRONLY,
     read_write = O_RDWR,
@@ -80,6 +96,7 @@ std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
                                              const std::span<const uint8_t> buf,
                                              const int64_t offset);
 
+// TODO: unroll errors
 enum class WritevError {
     Unexpected,
 };
@@ -88,4 +105,17 @@ std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
                                              const std::span<const iovec> buf,
                                              const int64_t offset,
                                              const int32_t flags = 0);
+enum class ReadError {
+    TemporarilyUnavailable,
+    BadFd,
+    FdIsDir,
+    BadBuffer,
+    NonSeekableFd,
+    InvalidParams,
+    Terminated,
+    Unexpected,
+};
+
+std::expected<uint64_t, ReadError>
+pread(const fd_t fd, const std::span<uint8_t> buf, const int64_t offset);
 } // namespace shclog::io::file

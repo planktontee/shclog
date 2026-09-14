@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cerrno>
 #include <cstdint>
 #include <limits>
@@ -317,7 +319,9 @@ enum Errno : uint16_t {
 
 };
 
-Errno io_uring_errno(const int rc) noexcept;
+Errno io_uring_errno(const int32_t rc) noexcept;
+
+Errno from_errno(const uint32_t rc) noexcept;
 
 Errno e_errno(const int rc) noexcept;
 

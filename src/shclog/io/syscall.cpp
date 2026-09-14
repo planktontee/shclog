@@ -1,19 +1,21 @@
 #include "shclog/io/syscall.hpp"
+#include "shclog/const.hpp"
 #include <cstring>
 #include <print>
-#include <utility>
 
 namespace shclog::io::syscall {
+inline bool _errno_out_of_bounds(const int e) noexcept {
+    return e < 0 || e > 177;
+}
+
 Errno debug_e_errno(const int e_errno,
                     const std::source_location loc) noexcept {
-#ifndef NDEBUG
-    std::println(stderr, "Panic in {}: {} (errno: {})", loc.function_name(),
-                 std::strerror(e_errno), e_errno);
-    std::abort();
-    std::unreachable();
-#else
+    if constexpr (IS_DEBUG) {
+        std::println(stderr, "Panic in {}: {} (errno: {})", loc.function_name(),
+                     std::strerror(e_errno), e_errno);
+        std::abort();
+    }
     return Errno::UNEXPECTED;
-#endif
 }
 
 Errno e_errno(const int rc) noexcept {
@@ -22,24 +24,33 @@ Errno e_errno(const int rc) noexcept {
 
     const int e = errno;
 
-    // last defined Errno comparison
-    if (e < 0 || e > 177)
+    if (_errno_out_of_bounds(e))
         return Errno::UNEXPECTED;
 
     return static_cast<Errno>(e);
 }
 
-Errno io_uring_errno(const int rc) noexcept {
+Errno io_uring_errno(const int32_t rc) noexcept {
     if (rc >= 0)
         return Errno::SUCCESS;
 
     const int e = -rc;
 
     // last defined Errno comparison
-    if (e < 0 || e > 177)
+    if (_errno_out_of_bounds(e))
         return Errno::UNEXPECTED;
 
     return static_cast<Errno>(e);
+}
+
+Errno from_errno(const uint32_t rc) noexcept {
+    if (rc == 0)
+        return Errno::SUCCESS;
+
+    if (rc > 177)
+        return Errno::UNEXPECTED;
+
+    return static_cast<Errno>(rc);
 }
 
 Errno e_errno(const void *rc) noexcept {

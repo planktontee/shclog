@@ -1,3 +1,5 @@
+#pragma once
+
 #include "shclog/io/file.hpp"
 #include "shclog/io/syscall.hpp"
 #include <expected>

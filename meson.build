@@ -35,6 +35,7 @@ test_src = [
   'test' / 'test_main.cpp',
   'test' / 'shclog' / 'test_mpsc_queue.cpp',
   'test' / 'shclog' / 'io' / 'test_mmap.cpp',
+  'test' / 'shclog' / 'io' / 'test_cpu.cpp',
   'test' / 'shclog' / 'io' / 'test_iouring.cpp',
 ]
 
@@ -45,6 +46,18 @@ test_exe = executable(
   include_directories: test_inc,
   dependencies: [doctest_dep],
 )
-test('unit_tests', test_exe)
+
+test_data_copy = custom_target(
+  'copy_test_data',
+  output: 'test_data',
+  command: [
+    'cp',
+    '-r', meson.current_source_dir() / 'test/data',
+    meson.current_build_dir() / 'test_data',
+  ],
+  build_by_default: true,
+)
+
+test('unit_tests', test_exe, depends: test_data_copy)
 
 run_target('test-compile', command: ['meson', 'test', '--verbose'], depends: test_exe)
