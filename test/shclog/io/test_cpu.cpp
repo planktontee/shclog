@@ -10,8 +10,7 @@
 using namespace shclog::io::cpu;
 
 TEST_CASE("Parse CPUCore files") {
-    auto cores_r =
-        list_cpu_cores<std::to_array("test_data/cpu_list_data/cpu")>();
+    auto cores_r = list_cpu_cores<std::to_array("data/cpu_list_data/cpu")>();
     if (!cores_r.has_value()) {
         std::ostringstream err;
         err << "Error: " << static_cast<int>(cores_r.error()) << "\n";

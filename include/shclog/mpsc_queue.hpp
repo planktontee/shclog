@@ -10,6 +10,7 @@
 #include <expected>
 #include <memory>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 /* Adapted from https://github.com/dbittman/waitfree-mpsc-queue/tree/master
@@ -208,6 +209,8 @@ concept HasNodeMember =
     std::is_same_v<decltype(std::declval<T &>().node), Node>;
 
 template <typename T> inline T *container_of(Node *n) noexcept {
+    static_assert(std::is_standard_layout_v<T>,
+                  "Memory layout has to be C compatible");
     static_assert(HasNodeMember<T>, "T must have a member Node node;");
     auto offset = offsetof(T, node);
     return reinterpret_cast<T *>(reinterpret_cast<uint8_t *>(n) - offset);

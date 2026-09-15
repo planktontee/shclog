@@ -2,10 +2,21 @@ project(
   'shclog',
   'cpp',
   default_options: [
-    'cpp_std=c++23',
+    'cpp_std=c++26',
     'werror=true',
-    'cpp_args=-Wall -Wextra -Wpedantic -fno-exceptions -Wno-interference-size -march=native',
   ],
+)
+cc = meson.get_compiler('cpp')
+
+add_project_arguments(
+  cc.get_supported_arguments('-Wno-interference-size'),
+  '-Wall',
+  '-Wextra',
+  '-Wpedantic',
+  # '-Werror=sign-conversion',
+  '-fno-exceptions',
+  '-march=native',
+  language: 'cpp',
 )
 
 shclog_inc = include_directories('include')
@@ -47,17 +58,10 @@ test_exe = executable(
   dependencies: [doctest_dep],
 )
 
-test_data_copy = custom_target(
-  'copy_test_data',
-  output: 'test_data',
-  command: [
-    'cp',
-    '-r', meson.current_source_dir() / 'test/data',
-    meson.current_build_dir() / 'test_data',
-  ],
-  build_by_default: true,
+test(
+  'unit_tests',
+  test_exe,
+  workdir: meson.current_source_dir() / 'test',
 )
-
-test('unit_tests', test_exe, depends: test_data_copy)
 
 run_target('test-compile', command: ['meson', 'test', '--verbose'], depends: test_exe)

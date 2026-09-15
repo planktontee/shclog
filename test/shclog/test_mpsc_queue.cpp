@@ -1,7 +1,6 @@
 #define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
 #include "doctest.h"
 #include "shclog/mpsc_queue.hpp"
-#include "shclog/pause.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <emmintrin.h>
@@ -12,7 +11,6 @@
 #include <thread>
 
 using namespace shclog::mpsc_queue;
-using namespace shclog::pause;
 
 TEST_CASE("MPSCQueue basic operations") {
     constexpr size_t capacity = 8;

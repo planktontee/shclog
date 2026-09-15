@@ -367,7 +367,7 @@ struct EventedIo {
         if (rc >= 0) [[likely]]
             return static_cast<uint32_t>(rc);
 
-        switch (from_errno(rc)) {
+        switch (io_uring_errno(rc)) {
         case Errno::SUCCESS:
             std::unreachable();
         case Errno::INVAL:
@@ -419,7 +419,7 @@ struct EventedIo {
         if (rc >= 0) [[likely]]
             return static_cast<uint32_t>(rc);
 
-        switch (from_errno(rc)) {
+        switch (io_uring_errno(rc)) {
         case Errno::SUCCESS:
             std::unreachable();
         case Errno::INVAL:
@@ -468,7 +468,7 @@ struct EventedIo {
         if (rc >= 0)
             return static_cast<uint32_t>(rc);
 
-        switch (from_errno(rc)) {
+        switch (io_uring_errno(rc)) {
         case Errno::SUCCESS:
             std::unreachable();
         case Errno::AGAIN:

@@ -67,15 +67,15 @@ template <auto _STUB = std::to_array("/sys/devices/system/cpu/cpu")>
 std::expected<std::vector<CPUCore>, ListCpuCoresError>
 list_cpu_cores() noexcept {
     std::vector<CPUCore> result;
-    result.reserve(16);
+    result.reserve(32);
 
     constexpr auto stub = _STUB;
     constexpr auto path_stub_end =
-        std::to_array("/topology/thread_siblings_list\0");
+        std::to_array("/topology/thread_siblings_list");
     constexpr size_t cpu_idx_buf_size = 4;
 
     std::array<uint8_t,
-               stub.size() - 1 + path_stub_end.size() - 1 + cpu_idx_buf_size>
+               stub.size() - 1 + path_stub_end.size() + cpu_idx_buf_size>
         path;
     std::memcpy(path.begin(), stub.begin(), stub.size() - 1);
 
@@ -159,10 +159,8 @@ list_cpu_cores() noexcept {
             }
             ++content_it;
         }
-        if constexpr (IS_DEBUG) {
-            if (*(content_end - 1) != '\n')
-                return std::unexpected(ListCpuCoresError::MalformedFile);
-        }
+        if (*(content_end - 1) != '\n')
+            return std::unexpected(ListCpuCoresError::MalformedFile);
 
         core.core_idx = i;
         result.push_back(core);

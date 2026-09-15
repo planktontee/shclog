@@ -43,9 +43,8 @@ mmap(const size_t len, void *addr = nullptr,
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;
-    case Errno::TXTBSY:
-        return std::unexpected(MmapError::AccessDenied);
     case Errno::ACCES:
+    case Errno::TXTBSY:
         return std::unexpected(MmapError::AccessDenied);
     case Errno::PERM:
         return std::unexpected(MmapError::PermissionDenied);

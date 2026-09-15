@@ -1,0 +1,10 @@
+# clang-analyzer-*,
+# cppcoreguidelines-*,
+# modernize-*,
+# -cppcoreguidelines-avoid-magic-numbers,
+# -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+Checks: >
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+HeaderFilterRegex: '(include|src)/shclog/.*'

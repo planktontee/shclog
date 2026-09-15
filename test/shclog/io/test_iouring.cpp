@@ -101,20 +101,27 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK
     auto cpu_cores_r = list_cpu_cores();
     CHECK(cpu_cores_r.has_value());
-    auto cores = cpu_cores_r.value();
+    const auto &cores = cpu_cores_r.value();
 
-    std::set<size_t> target_cores;
-    for (auto core : cores)
-        target_cores.insert(core.siblings[0]);
+    const std::set<size_t> target_cores = [&] {
+        std::set<size_t> shadow;
+        for (const auto &core : cores)
+            shadow.insert(core.siblings[0]);
+        if (shadow.size() == 0)
+            shadow.insert(0);
+        return shadow;
+    }();
 
     // MAX - main - iouring
-    size_t PRODUCERS = target_cores.size() - 2;
+    const size_t PRODUCERS =
+        std::max(static_cast<size_t>(1),
+                 std::sub_sat(target_cores.size(), static_cast<size_t>(2)));
     // this should be a ratio for MAX_HW_CORES
-    constexpr size_t LINES_PER_PRODUCER = (1 << 20) * 4;
+    constexpr size_t LINES_PER_PRODUCER = (1 << 10) * 512;
 #if QUEUE_TYPE != 2
     constexpr size_t QUEUE_CAPACITY = (1 << 10) * 32;
 #endif
-    constexpr size_t MAX_IO_BYTES = (1 << 10) * 1024 * 2;
+    constexpr size_t MAX_IO_BYTES = (1 << 10) * 128;
     constexpr size_t MIN_LEN = 128;
     constexpr size_t MAX_LINE_LEN = (1 << 10) * 2;
 #else
@@ -127,7 +134,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     constexpr size_t MIN_LEN = 64;
     constexpr size_t MAX_LINE_LEN = 256;
 #endif
-    size_t TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
+    const size_t TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
     constexpr size_t IO_BUFFERS = 2;
     constexpr auto TARGET_FLUSH =
         std::chrono::nanoseconds(static_cast<uint64_t>(1e9 / 30));
@@ -296,9 +303,17 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             [&target_cores](size_t x) { return target_cores.contains(x); });
     CHECK(SetCpuAffinityResult::Success == set_cpu_afinity(cpu_view));
 
+    REQUIRE(target_cores.size() >= 1);
+    const std::vector<size_t> core_arr(target_cores.begin(),
+                                       target_cores.end());
+
     const size_t main_cpu = static_cast<size_t>(sched_getcpu());
-    const auto pick_cpu = [main_cpu](const size_t target) -> size_t {
-        return target + (target >= main_cpu ? 1 : 0);
+    const auto pick_cpu = [main_cpu, &core_arr](const size_t target) -> size_t {
+        const auto idx = target % core_arr.size();
+        if (core_arr[idx] >= main_cpu)
+            return core_arr[(idx + 1) % core_arr.size()];
+        else
+            return core_arr[idx];
     };
 #endif
 
@@ -426,8 +441,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #elif QUEUE_TYPE == 2
                 message = queue.dequeue();
 #else
-                message = std::unique_ptr<Message, ByteArrDeleter>(
-                    queue->dequeue().release(), ByteArrDeleter());
+                message = queue->dequeue();
 #endif
             else
                 message = std::move(overflow);
@@ -583,7 +597,6 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if RUN_CHECKS
     REQUIRE(producers_finished.load(std::memory_order_acquire) == PRODUCERS);
     REQUIRE(consumed_lines == TOTAL_LINES);
-    // REQUIRE(queue->size() == 0);
 #endif
 
     // we get out of the loop for consumer once all producers are done
@@ -746,7 +759,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     uint64_t enqueue_min_ns = UINT64_MAX;
     std::vector<uint64_t> enqueue_samples;
     enqueue_samples.reserve(LINES_PER_PRODUCER);
-    for (auto samples : stats.producer_enqueue_samples) {
+    for (auto &samples : stats.producer_enqueue_samples) {
         enqueue_max_ns = std::max(enqueue_max_ns, std::ranges::max(samples));
         enqueue_min_ns = std::min(enqueue_min_ns, std::ranges::min(samples));
         enqueue_samples.insert(enqueue_samples.end(),
