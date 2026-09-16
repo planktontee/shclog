@@ -21,7 +21,7 @@
 namespace shclog::io::iouring {
 using namespace shclog::io::mmap;
 
-enum class IoUringSetupError {
+enum class IoUringSetupError : uint8_t {
     NoSuchFd,
     PermissionDenied,
     ProcessFdQuotaExceeded,
@@ -33,7 +33,7 @@ enum class IoUringSetupError {
 const std::expected<const fd_t, IoUringSetupError>
 io_uring_setup(io_uring_params &params, const uint32_t capacity) noexcept;
 
-enum class IoUringEnterError {
+enum class IoUringEnterError : uint8_t {
     ResourcesTemporarilyUnavailable,
     BadFdForRing,
     RingIsDisabled,
@@ -47,7 +47,7 @@ io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
                const uint32_t min_complete, const uint32_t flags,
                sigset_t *sig = nullptr) noexcept;
 
-enum class IoUringRegisterError {
+enum class IoUringRegisterError : uint8_t {
     AccessDenied,
     RegistrationsAlreadyInPlace,
     BadFd,
@@ -63,7 +63,7 @@ const std::expected<const uint32_t, IoUringRegisterError>
 io_uring_register(const fd_t ring_fd, const uint32_t opcode, const void *arg,
                   uint32_t nr_args) noexcept;
 
-enum class RingQueueAllocError {
+enum class RingQueueAllocError : uint8_t {
     OutOfMemory,
     Unexpected,
 };
@@ -92,20 +92,25 @@ io_uring_mmap(const fd_t ring_fd, const size_t size, const uint64_t offset) {
 // to the push and pull process
 struct EventedIo {
   public:
-    enum CreateError {
+    enum CreateError : uint8_t {
         InvalidCapacity,
         UnableToSetupRing,
         NoAvailableFd,
         OutOfMemory,
     };
 
+    EventedIo(const EventedIo &) = delete;
+    EventedIo &operator=(const EventedIo &) = delete;
+    EventedIo(EventedIo &&) = delete;
+    EventedIo &operator=(EventedIo &&) = delete;
+
     ~EventedIo() noexcept {
-        assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_BUFFERS,
-                                 nullptr, 0)
-                   .has_value());
-        assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_FILES,
-                                 nullptr, 0)
-                   .has_value());
+        [[maybe_unused]] const auto unreg_buf_r = io_uring_register(
+            ring_fd.get(), IORING_UNREGISTER_BUFFERS, nullptr, 0);
+        assert(unreg_buf_r.has_value());
+        [[maybe_unused]] const auto unreg_f_r = io_uring_register(
+            ring_fd.get(), IORING_UNREGISTER_FILES, nullptr, 0);
+        assert(unreg_f_r.has_value());
 
         unregister_ring_fd();
     }
@@ -115,8 +120,7 @@ struct EventedIo {
         if (capacity == 0 || (capacity & (capacity - 1)) != 0)
             return std::unexpected(CreateError::InvalidCapacity);
 
-        io_uring_params params;
-        std::memset(&params, 0, sizeof(params));
+        io_uring_params params{};
         params.flags = flags;
 
         const auto setup_r = io_uring_setup(params, capacity);
@@ -211,9 +215,9 @@ struct EventedIo {
                                                       params.cq_off.tail);
 
         uint32_t *const cq_flags =
-            reinterpret_cast<uint32_t *>(sq_ptr.get() + params.cq_off.flags);
+            reinterpret_cast<uint32_t *>(cq_ptr_raw + params.cq_off.flags);
         uint32_t *const cq_overflow =
-            reinterpret_cast<uint32_t *>(sq_ptr.get() + params.cq_off.overflow);
+            reinterpret_cast<uint32_t *>(cq_ptr_raw + params.cq_off.overflow);
         const uint32_t cq_mask =
             *reinterpret_cast<uint32_t *>(cq_ptr_raw + params.cq_off.ring_mask);
         io_uring_cqe *const cqes =
@@ -251,7 +255,7 @@ struct EventedIo {
         return true;
     }
 
-    enum class PushResult {
+    enum class PushResult : uint8_t {
         Success,
         WakeFailed,
         QueueIsFull,
@@ -340,12 +344,12 @@ struct EventedIo {
         return submit(slot, index);
     }
 
-    enum class PopError {
+    enum class PopError : uint8_t {
         CompletionCheckError,
         RingEmpty,
     };
 
-    enum class WritevError {
+    enum class WritevError : uint8_t {
         BadIovecsSize,
         AccessDenied,
         TemporarilyUnavailable,
@@ -397,7 +401,7 @@ struct EventedIo {
         }
     }
 
-    enum class WriteError {
+    enum class WriteError : uint8_t {
         BadBufferSize,
         AccessDenied,
         TemporarilyUnavailable,
@@ -449,7 +453,7 @@ struct EventedIo {
         }
     }
 
-    enum class ReadError {
+    enum class ReadError : uint8_t {
         TemporarilyUnavailable,
         BadFd,
         FdIsDir,
@@ -495,14 +499,14 @@ struct EventedIo {
     std::atomic<uint32_t> *const sq_tail;
     uint32_t *const sq_flags;
     uint32_t *const sq_array;
-    uint32_t *const sq_dropped;
+    [[maybe_unused]] uint32_t *const sq_dropped;
     const uint32_t sq_mask;
     std::unique_ptr<io_uring_sqe, MmapDeleter> sqes;
 
     std::atomic<uint32_t> *const cq_head;
     std::atomic<uint32_t> *const cq_tail;
-    uint32_t *const cq_flags;
-    uint32_t *const cq_overflow;
+    [[maybe_unused]] uint32_t *const cq_flags;
+    [[maybe_unused]] uint32_t *const cq_overflow;
     const uint32_t cq_mask;
     io_uring_cqe *const cqes;
 
@@ -544,9 +548,9 @@ struct EventedIo {
                 .data = 0,
             };
 
-            assert(io_uring_register(ring_fd.get(), IORING_UNREGISTER_RING_FDS,
-                                     &reg, 1)
-                       .has_value());
+            [[maybe_unused]] const auto unreg_ring_r = io_uring_register(
+                ring_fd.get(), IORING_UNREGISTER_RING_FDS, &reg, 1);
+            assert(unreg_ring_r.has_value());
         }
     }
 

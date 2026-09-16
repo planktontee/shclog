@@ -33,7 +33,7 @@ class unique_fd {
         return *this;
     }
 
-    int get() const noexcept { return fd; }
+    [[nodiscard]] fd_t get() const noexcept { return fd; }
 
     int release() noexcept { return std::exchange(fd, -1); }
 
@@ -50,7 +50,7 @@ class unique_fd {
     fd_t fd;
 };
 
-enum OpenError {
+enum OpenError : uint8_t {
     RetryableWithoutCache,
     PathContainsLink,
     PathCrossesMount,
@@ -77,7 +77,7 @@ std::expected<fd_t, OpenError> open(const char *const path,
                                     const ::open_how *const how,
                                     fd_t cwd = AT_FDCWD) noexcept;
 
-enum class OpenMode {
+enum class OpenMode : uint8_t {
     read = O_RDONLY,
     write = O_WRONLY,
     read_write = O_RDWR,
@@ -88,7 +88,7 @@ tmpfile(const OpenMode openMode = OpenMode::read_write,
         const uint64_t flags = O_CLOEXEC, const uint64_t mode = 0600) noexcept;
 
 // TODO: unroll errors
-enum class WriteError {
+enum class WriteError : uint8_t {
     Unexpected,
 };
 
@@ -97,15 +97,14 @@ std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
                                              const int64_t offset);
 
 // TODO: unroll errors
-enum class WritevError {
+enum class WritevError : uint8_t {
     Unexpected,
 };
 
-std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
-                                             const std::span<const iovec> buf,
-                                             const int64_t offset,
-                                             const int32_t flags = 0);
-enum class ReadError {
+std::expected<uint64_t, WritevError>
+pwritev(const fd_t fd, const std::span<const iovec> buf, const int64_t offset);
+
+enum class ReadError : uint8_t {
     TemporarilyUnavailable,
     BadFd,
     FdIsDir,

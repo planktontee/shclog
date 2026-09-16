@@ -17,7 +17,7 @@ TEST_CASE("Parse CPUCore files") {
         MESSAGE(err.str());
     }
     CHECK(cores_r.has_value());
-    auto cores = cores_r.value();
+    const auto &cores = cores_r.value();
     CHECK(cores.size() == 3);
 
     auto expected = std::vector<std::vector<size_t>>{
@@ -26,7 +26,7 @@ TEST_CASE("Parse CPUCore files") {
         std::vector<size_t>{2, 10},
     };
     for (size_t i = 0; i < cores.size(); ++i) {
-        const auto core = cores[i];
+        const auto &core = cores[i];
         CHECK(core.core_idx == i);
         CHECK(expected[i] == core.siblings);
     }

@@ -12,11 +12,9 @@ using namespace shclog::io::syscall;
 
 pthread_t
 pthread_t_uwrap(const std::optional<const pthread_t> target) noexcept {
-    return target
-        .or_else([] -> const std::optional<const pthread_t> {
-            return std::optional(pthread_self());
-        })
-        .value();
+    if (target.has_value())
+        return *target;
+    return pthread_self();
 }
 
 SetPriorityResult set_priority(const int32_t niceness,

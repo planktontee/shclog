@@ -3,7 +3,6 @@
 #include "shclog/const.hpp"
 #include "shclog/io/file.hpp"
 #include "shclog/io/process.hpp"
-#include "shclog/io/syscall.hpp"
 #include <charconv>
 #include <concepts>
 #include <cstddef>
@@ -15,16 +14,16 @@
 #include <optional>
 #include <print>
 #include <ranges>
+#include <source_location>
 #include <sys/types.h>
 #include <vector>
 
 namespace shclog::io::cpu {
 
-using namespace shclog::io::syscall;
 using namespace shclog::io::process;
 using namespace shclog::io::file;
 
-enum SetCpuAffinityResult {
+enum SetCpuAffinityResult : uint8_t {
     Success,
     InvalidParam,
     Unexpected,
@@ -51,7 +50,7 @@ SetCpuAffinityResult set_cpu_afinity(
     return _set_cpu_affinity(set, pthread_t_uwrap(target));
 }
 
-enum class ListCpuCoresError {
+enum class ListCpuCoresError : uint8_t {
     Unexpected,
     CouldNotReadCPUFile,
     MalformedFile,
@@ -59,24 +58,26 @@ enum class ListCpuCoresError {
 
 struct CPUCore {
   public:
-    size_t core_idx;
+    size_t core_idx = 0;
     std::vector<size_t> siblings;
+
+    CPUCore() { siblings.reserve(2); }
 };
 
-template <auto _STUB = std::to_array("/sys/devices/system/cpu/cpu")>
+template <auto PATH_STUB = std::to_array("/sys/devices/system/cpu/cpu")>
 std::expected<std::vector<CPUCore>, ListCpuCoresError>
 list_cpu_cores() noexcept {
     std::vector<CPUCore> result;
     result.reserve(32);
 
-    constexpr auto stub = _STUB;
+    constexpr auto stub = PATH_STUB;
     constexpr auto path_stub_end =
         std::to_array("/topology/thread_siblings_list");
     constexpr size_t cpu_idx_buf_size = 4;
 
     std::array<uint8_t,
                stub.size() - 1 + path_stub_end.size() + cpu_idx_buf_size>
-        path;
+        path{};
     std::memcpy(path.begin(), stub.begin(), stub.size() - 1);
 
     std::span<uint8_t, cpu_idx_buf_size> cpu_idx_buf{&path.at(stub.size() - 1),
@@ -121,7 +122,7 @@ list_cpu_cores() noexcept {
         const uint8_t *content_it = buf.data();
         const uint8_t *const content_end = content_it + read_r.value();
 
-        CPUCore core;
+        CPUCore core{};
         while (content_it != content_end) {
             auto comma_p = static_cast<const uint8_t *>(
                 std::memchr(content_it, ',', content_end - content_it));
@@ -163,7 +164,7 @@ list_cpu_cores() noexcept {
             return std::unexpected(ListCpuCoresError::MalformedFile);
 
         core.core_idx = i;
-        result.push_back(core);
+        result.push_back(std::move(core));
     }
 
     return result;

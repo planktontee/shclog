@@ -1,4 +1,6 @@
 #include "shclog/io/cpu.hpp"
+#include "shclog/io/syscall.hpp"
+#include <cassert>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -12,16 +14,19 @@
 
 namespace shclog::io::cpu {
 
+using namespace shclog::io::syscall;
+
 SetCpuAffinityResult _set_cpu_affinity(const cpu_set_t &set,
                                        const pthread_t thread_target) noexcept {
 
-    const uint32_t rc =
+    const int32_t rc =
         pthread_setaffinity_np(thread_target, sizeof(cpu_set_t), &set);
 
     if (rc == 0) [[likely]]
         return SetCpuAffinityResult::Success;
 
-    switch (from_errno(rc)) {
+    assert(std::in_range<uint64_t>(rc));
+    switch (from_errno(static_cast<uint64_t>(rc))) {
     case Errno::SUCCESS:
         std::unreachable();
     case Errno::INVAL:

@@ -18,7 +18,7 @@ struct MmapDeleter {
     }
 };
 
-enum MmapError {
+enum MmapError : uint8_t {
     AccessDenied,
     PermissionDenied,
     LockedMemoryLimitExceeded,

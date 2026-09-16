@@ -6,7 +6,7 @@ namespace shclog::io::iouring {
 
 const std::expected<const fd_t, IoUringSetupError>
 io_uring_setup(io_uring_params &params, const uint32_t capacity) noexcept {
-    const int rc = ::syscall(__NR_io_uring_setup, capacity, &params);
+    const int64_t rc = ::syscall(__NR_io_uring_setup, capacity, &params);
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;
@@ -33,8 +33,8 @@ io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
                const uint32_t min_complete, const uint32_t flags,
                sigset_t *sig) noexcept {
 
-    const int rc = ::syscall(__NR_io_uring_enter, ring_fd, to_submit,
-                             min_complete, flags, sig);
+    const int64_t rc = ::syscall(__NR_io_uring_enter, ring_fd, to_submit,
+                                 min_complete, flags, sig);
     if (rc < 0) [[unlikely]]
         switch (e_errno(rc)) {
         case Errno::SUCCESS:
@@ -60,7 +60,7 @@ const std::expected<const uint32_t, IoUringRegisterError>
 io_uring_register(const fd_t ring_fd, const uint32_t opcode, const void *arg,
                   uint32_t nr_args) noexcept {
 
-    const int rc =
+    const int64_t rc =
         ::syscall(__NR_io_uring_register, ring_fd, opcode, arg, nr_args);
 
     switch (e_errno(rc)) {

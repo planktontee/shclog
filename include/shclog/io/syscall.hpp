@@ -319,15 +319,15 @@ enum Errno : uint16_t {
 
 };
 
-Errno io_uring_errno(const int32_t rc) noexcept;
+Errno io_uring_errno(const int64_t rc) noexcept;
 
-Errno from_errno(const uint32_t rc) noexcept;
+Errno from_errno(const uint64_t rc) noexcept;
 
-Errno e_errno(const int rc) noexcept;
+Errno e_errno(const int64_t rc) noexcept;
 
 Errno e_errno(const void *rc) noexcept;
 
 Errno debug_e_errno(
-    const int e_errno = errno,
+    const int32_t e_errno = errno,
     const std::source_location loc = std::source_location::current()) noexcept;
 } // namespace shclog::io::syscall

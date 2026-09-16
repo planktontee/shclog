@@ -64,4 +64,13 @@ test(
   workdir: meson.current_source_dir() / 'test',
 )
 
-run_target('test-compile', command: ['meson', 'test', '--verbose'], depends: test_exe)
+run_target(
+  'test-compile',
+  command: [
+    'sh',
+    '-c', 'ninja -C "$1" clang-tidy && meson test -C "$1" --verbose',
+    'test-compile',
+    meson.project_build_root(),
+  ],
+  depends: test_exe,
+)

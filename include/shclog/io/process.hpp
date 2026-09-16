@@ -5,7 +5,7 @@
 #include <pthread.h>
 namespace shclog::io::process {
 
-enum SetPriorityResult {
+enum SetPriorityResult : uint8_t {
     Success,
     InvalidParam,
     AccessDenied,

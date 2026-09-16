@@ -1,6 +1,6 @@
 #pragma once
 
-#include "shclog/align.hpp"
+#include "shclog/const.hpp"
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -30,22 +30,35 @@
 */
 
 namespace shclog::mpsc_queue {
-enum CreateError { InvalidCapacity, AllocationFailed };
+enum CreateError : uint8_t { InvalidCapacity, AllocationFailed };
 
 template <typename T, typename Deleter = std::default_delete<T>>
 struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
   private:
-    align::CachePadAlign<std::atomic<size_t>> count;
-    align::CachePadAlign<std::atomic<size_t>> head;
-    align::CachePadAlign<std::unique_ptr<std::atomic<T *>[]>> buffer;
-    align::CachePadAlign<size_t> tail;
-    const size_t buf_mask;
+    static constexpr std::align_val_t buf_align{
+        std::hardware_destructive_interference_size};
+
+    struct AlignedBufferDeleter {
+        void operator()(std::atomic<T *> *p) const noexcept {
+            static_assert(std::is_trivially_destructible_v<std::atomic<T *>>);
+            ::operator delete[](p, buf_align);
+        }
+    };
+
+    using Buffer = std::unique_ptr<std::atomic<T *>[], AlignedBufferDeleter>;
+
+    alignas(std::hardware_destructive_interference_size)
+        std::atomic<size_t> count{};
+    alignas(
+        std::hardware_destructive_interference_size) std::atomic<size_t> head{};
+    alignas(std::hardware_destructive_interference_size) Buffer buffer;
+    alignas(std::hardware_destructive_interference_size) size_t tail{};
+    // padding
+    alignas(std::hardware_destructive_interference_size) const size_t buf_mask;
     const size_t max;
 
-    MPSCQueue(const size_t capacity,
-              std::unique_ptr<std::atomic<T *>[]> &&buf_ptr) noexcept
-        : count(), head(), buffer(std::move(buf_ptr)), tail(),
-          buf_mask(capacity - 1), max(capacity) {}
+    MPSCQueue(const size_t capacity, Buffer &&buf_ptr) noexcept
+        : buffer(std::move(buf_ptr)), buf_mask(capacity - 1), max(capacity) {}
 
   public:
     static std::expected<std::unique_ptr<MPSCQueue<T, Deleter>>, CreateError>
@@ -53,12 +66,8 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         if (capacity < 2 || (capacity & (capacity - 1)) != 0) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::InvalidCapacity);
 
-        // done like this for alignment
-        alignas(std::hardware_destructive_interference_size)
-            std::atomic<T *> *const raw_buf =
-                new (std::nothrow) std::atomic<T *>[capacity]();
-        auto buf = std::unique_ptr<std::atomic<T *>[]>(raw_buf);
-
+        auto buf =
+            Buffer(new (buf_align, std::nothrow) std::atomic<T *>[capacity]());
         if (!buf) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::AllocationFailed);
 
@@ -85,87 +94,91 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         if (!v) [[unlikely]]
             return false;
 
-        const size_t cur_count =
-            count.value.fetch_add(1, std::memory_order_acquire);
+        // this reduces the chance of backing off all producers
+        if (count.load(std::memory_order_relaxed) >= max)
+            return false;
+
+        const size_t cur_count = count.fetch_add(1, std::memory_order_acquire);
         if (cur_count >= max) {
-            count.value.fetch_sub(1, std::memory_order_relaxed);
-            _mm_pause();
+            count.fetch_sub(1, std::memory_order_relaxed);
             return false;
         }
 
-        const size_t h = head.value.fetch_add(1, std::memory_order_relaxed);
+        const size_t h = head.fetch_add(1, std::memory_order_relaxed);
 
-        // assert(buffer.value[h & buf_mask].load(std::memory_order_relaxed) ==
-        //        nullptr);
-        // const auto rv = buffer.value[h & buf_mask].exchange(
-        //     v.release(), std::memory_order_release);
-        // assert(!rv);
-        buffer.value[h & buf_mask].store(v.release(),
-                                         std::memory_order_release);
+        if constexpr (IS_DEBUG) {
+            const auto rv = buffer[h & buf_mask].exchange(
+                v.release(), std::memory_order_release);
+            assert(!rv);
+        } else
+            buffer[h & buf_mask].store(v.release(), std::memory_order_release);
 
         return true;
     }
 
     std::unique_ptr<T, Deleter> dequeue() noexcept {
-        const auto ret = buffer.value[tail.value].exchange(
-            nullptr, std::memory_order_acquire);
+        const auto ret =
+            buffer[tail].exchange(nullptr, std::memory_order_acquire);
 
         if (!ret)
             return nullptr;
 
-        tail.value = (tail.value + 1) & buf_mask;
+        tail = (tail + 1) & buf_mask;
 
-        // const size_t r = count.value.fetch_sub(1, std::memory_order_release);
-        // assert(r > 0);
-        count.value.fetch_sub(1, std::memory_order_release);
+        if constexpr (IS_DEBUG) {
+            const size_t r = count.fetch_sub(1, std::memory_order_release);
+            assert(r > 0);
+        } else
+            count.fetch_sub(1, std::memory_order_release);
+
         return std::unique_ptr<T, Deleter>(ret);
     }
 
-    size_t size() const noexcept { return count.value; }
+    [[nodiscard]] size_t size() const noexcept { return count; }
 
-    size_t capacity() const noexcept { return max; }
+    [[nodiscard]] size_t capacity() const noexcept { return max; }
 };
 
 // TODO: remove size from template, add more checks
 template <typename T, size_t N, typename Deleter = std::default_delete<T>>
 struct MPSCQSlotted {
   private:
-    struct Cell {
-        align::CachePadAlign<std::atomic<size_t>> seq;
-        T *data;
+    struct alignas(std::hardware_destructive_interference_size) Cell {
+        std::atomic<size_t> seq{};
+        T *data{nullptr};
     };
 
   public:
-    align::CachePadAlign<size_t> tail;
-    align::CachePadAlign<std::atomic<size_t>> head;
+    size_t tail;
+    std::atomic<size_t> head;
 
     Cell buffer[N];
 
     static constexpr size_t MASK = N - 1;
 
     MPSCQSlotted() noexcept {
-        tail.value = 0;
-        head.value.store(0, std::memory_order_relaxed);
+        tail = 0;
+        head.store(0, std::memory_order_relaxed);
 
         for (size_t i = 0; i < N; ++i)
-            buffer[i].seq.value.store(i, std::memory_order_relaxed);
+            buffer[i].seq.store(i, std::memory_order_relaxed);
 
         std::atomic_thread_fence(std::memory_order_release);
     }
 
     bool enqueue(std::unique_ptr<T, Deleter> &&v) noexcept {
         // size_t pos = head.value.load(std::memory_order_relaxed);
-        size_t pos = head.value.fetch_add(1, std::memory_order_relaxed);
+        size_t pos = head.fetch_add(1, std::memory_order_relaxed);
 
         Cell *slot = &buffer[pos & MASK];
         // Cell *slot;
         while (true) {
             // slot = &buffer[pos & MASK];
-            const size_t seq = slot->seq.value.load(std::memory_order_acquire);
+            const size_t seq = slot->seq.load(std::memory_order_acquire);
             const intptr_t dif =
                 static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
             if (dif == 0) {
-                // if (head.value.compare_exchange_weak(pos, pos + 1,
+                // if (head.compare_exchange_weak(pos, pos + 1,
                 //                                      std::memory_order_relaxed))
                 break;
             }
@@ -175,27 +188,27 @@ struct MPSCQSlotted {
 
             _mm_pause();
 
-            // pos = head.value.load(std::memory_order_relaxed);
+            // pos = head.load(std::memory_order_relaxed);
         }
 
         slot->data = v.release();
-        slot->seq.value.store(pos + 1, std::memory_order_release);
+        slot->seq.store(pos + 1, std::memory_order_release);
         return true;
     }
 
     std::unique_ptr<T, Deleter> dequeue() noexcept {
-        Cell *slot = &buffer[tail.value & MASK];
+        Cell *slot = &buffer[tail & MASK];
 
-        const size_t seq = slot->seq.value.load(std::memory_order_acquire);
+        const size_t seq = slot->seq.load(std::memory_order_acquire);
 
         const intptr_t dif =
-            static_cast<intptr_t>(seq) - static_cast<intptr_t>(tail.value + 1);
+            static_cast<intptr_t>(seq) - static_cast<intptr_t>(tail + 1);
         if (dif < 0)
             return nullptr;
 
         T *v = slot->data;
-        slot->seq.value.store(tail.value + N, std::memory_order_release);
-        tail.value++;
+        slot->seq.store(tail + N, std::memory_order_release);
+        tail++;
         return std::unique_ptr<T, Deleter>(v);
     }
 };

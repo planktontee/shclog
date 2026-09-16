@@ -24,7 +24,7 @@ void close(fd_t fd) noexcept {
 std::expected<fd_t, OpenError>
 open(const char *const path, const ::open_how *const how, fd_t cwd) noexcept {
     constexpr const size_t size = sizeof(::open_how);
-    const int rc = ::syscall(SYS_openat2, cwd, path, how, size);
+    const int64_t rc = ::syscall(SYS_openat2, cwd, path, how, size);
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;
@@ -116,12 +116,10 @@ std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
     return static_cast<uint64_t>(rc);
 }
 
-std::expected<uint64_t, WritevError> pwritev(const fd_t fd,
-                                             const std::span<const iovec> buf,
-                                             const int64_t offset,
-                                             const int32_t flags) {
+std::expected<uint64_t, WritevError>
+pwritev(const fd_t fd, const std::span<const iovec> buf, const int64_t offset) {
     const int64_t rc =
-        ::syscall(__NR_pwritev, fd, buf.data(), buf.size(), offset, flags);
+        ::syscall(__NR_pwritev, fd, buf.data(), buf.size(), offset);
 
     // TODO: unroll errors
     switch (e_errno(rc)) {

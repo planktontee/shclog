@@ -117,20 +117,20 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         std::max(static_cast<size_t>(1),
                  std::sub_sat(target_cores.size(), static_cast<size_t>(2)));
     // this should be a ratio for MAX_HW_CORES
-    constexpr size_t LINES_PER_PRODUCER = (1 << 10) * 512;
+    constexpr size_t LINES_PER_PRODUCER = (1L << 10) * 512;
 #if QUEUE_TYPE != 2
-    constexpr size_t QUEUE_CAPACITY = (1 << 10) * 32;
+    constexpr size_t QUEUE_CAPACITY = (1L << 10) * 32;
 #endif
-    constexpr size_t MAX_IO_BYTES = (1 << 10) * 128;
+    constexpr size_t MAX_IO_BYTES = (1L << 10) * 128;
     constexpr size_t MIN_LEN = 128;
-    constexpr size_t MAX_LINE_LEN = (1 << 10) * 2;
+    constexpr size_t MAX_LINE_LEN = (1L << 10) * 2;
 #else
     constexpr size_t PRODUCERS = 3;
-    constexpr size_t LINES_PER_PRODUCER = (1 << 5);
+    constexpr size_t LINES_PER_PRODUCER = (1L << 5);
 #if QUEUE_TYPE != 2
     constexpr size_t QUEUE_CAPACITY = 512;
 #endif
-    constexpr size_t MAX_IO_BYTES = (1 << 10);
+    constexpr size_t MAX_IO_BYTES = (1L << 10);
     constexpr size_t MIN_LEN = 64;
     constexpr size_t MAX_LINE_LEN = 256;
 #endif
@@ -148,22 +148,32 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         uint8_t *data;
         const size_t size;
 
-        Message(uint8_t *data, const size_t size) noexcept
+        explicit Message(const size_t size) noexcept
             :
 #if QUEUE_TYPE == 2
-              node(nullptr),
+              node(),
 #endif
-              data(data), size(size) {};
+              data(reinterpret_cast<uint8_t *>(this + 1)), size(size) {
+        }
 
         std::span<uint8_t> bytes() noexcept { return {data, size}; }
 
-        std::span<const uint8_t> bytes() const noexcept { return {data, size}; }
-    };
+        [[nodiscard]] std::span<const uint8_t> bytes() const noexcept {
+            return {data, size};
+        }
 
-    struct ByteArrDeleter {
-        void operator()(void *const ptr) const {
-            if (ptr)
-                delete[] reinterpret_cast<uint8_t *>(ptr);
+        static void *operator new(const size_t header, const size_t payload,
+                                  const std::nothrow_t &) noexcept {
+            return ::operator new(header + payload, std::nothrow);
+        }
+
+        static void operator delete(void *const p) noexcept {
+            ::operator delete(p);
+        }
+
+        static void operator delete(void *const p, size_t,
+                                    const std::nothrow_t &) noexcept {
+            ::operator delete(p);
         }
     };
 
@@ -223,7 +233,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
             producer_enqueue_samples =
                 std::vector<std::vector<uint64_t>>(producers_n);
-            for (auto samples : producer_enqueue_samples)
+            for (auto &samples : producer_enqueue_samples)
                 samples.reserve(producer_capacity);
         }
     };
@@ -234,24 +244,23 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 
     const auto make_line =
-        [](std::mt19937_64 &rng) -> std::unique_ptr<Message, ByteArrDeleter> {
+        [](std::mt19937_64 &rng) -> std::unique_ptr<Message> {
         std::uniform_int_distribution<size_t> length_dist(MIN_LEN,
                                                           MAX_LINE_LEN);
 
         std::uniform_int_distribution<int> character_dist(32, 126);
 
         const size_t len = length_dist(rng);
-        auto *const mem = new (std::nothrow) uint8_t[sizeof(Message) + len];
-        if (!mem) [[unlikely]]
-            std::unreachable();
-
-        auto *const message = new (mem) Message(mem + sizeof(Message), len);
+        auto message =
+            std::unique_ptr<Message>(new (len, std::nothrow) Message(len));
+        if (!message) [[unlikely]]
+            std::abort();
 
         for (size_t i = 0; i + 1 < len; ++i)
             message->data[i] = static_cast<char>(character_dist(rng));
         message->data[len - 1] = '\n';
 
-        return std::unique_ptr<Message, ByteArrDeleter>(message);
+        return message;
     };
 
     auto evented_r = EventedIo::create(1, IORING_SETUP_SINGLE_ISSUER);
@@ -276,11 +285,11 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     constexpr fd_t tmp_fd_idx = 0;
 
 #if QUEUE_TYPE == 1
-    MPSCQSlotted<Message, QUEUE_CAPACITY, ByteArrDeleter> queue{};
+    MPSCQSlotted<Message, QUEUE_CAPACITY> queue{};
 #elif QUEUE_TYPE == 2
-    UnboundedLinkedMPSCQ<Message, ByteArrDeleter> queue{};
+    UnboundedLinkedMPSCQ<Message> queue{};
 #else
-    auto queue_r = MPSCQueue<Message, ByteArrDeleter>::create(QUEUE_CAPACITY);
+    auto queue_r = MPSCQueue<Message>::create(QUEUE_CAPACITY);
 #if RUN_CHECKS
     REQUIRE(queue_r.has_value());
 #endif
@@ -317,7 +326,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     };
 #endif
 
-    std::barrier ready(PRODUCERS + 1);
+    assert(std::in_range<long>(PRODUCERS + 1));
+    std::barrier ready(static_cast<long>(PRODUCERS + 1));
     for (size_t producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
         producers.emplace_back([&, producer_id] {
 #if BENCHMARK
@@ -361,7 +371,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     }
 
     alignas(4096) std::array<std::array<uint8_t, MAX_IO_BYTES>, IO_BUFFERS>
-        buffers;
+        buffers{};
 
     const iovec reg_buf[2] = {
         {.iov_base = buffers[0].data(), .iov_len = MAX_IO_BYTES},
@@ -382,7 +392,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     uint64_t file_offset = 0;
     size_t active_buffer = 0;
     size_t consumed_lines = 0;
-    std::unique_ptr<Message, ByteArrDeleter> overflow = nullptr;
+    std::unique_ptr<Message> overflow = nullptr;
     size_t last_expand = 0;
 
     ready.arrive_and_wait();
@@ -404,11 +414,10 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK == 1
             const auto falloc_start = clock::now();
 #endif
-#if RUN_CHECKS == 1
-            auto rc =
-#endif
-                fallocate(tmp_fd.get(), FALLOC_FL_KEEP_SIZE, last_expand,
-                          PREALLOC_CHUNK);
+            assert(std::in_range<off_t>(last_expand));
+            [[maybe_unused]] auto rc =
+                fallocate(tmp_fd.get(), FALLOC_FL_KEEP_SIZE,
+                          static_cast<off_t>(last_expand), PREALLOC_CHUNK);
 #if BENCHMARK == 1
             const auto falloc_end = clock::now();
             const uint64_t falloc_ns = static_cast<uint64_t>(
@@ -434,7 +443,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK == 1
             const auto queue_start = clock::now();
 #endif
-            std::unique_ptr<Message, ByteArrDeleter> message;
+            std::unique_ptr<Message> message;
             if (!overflow.get()) [[likely]]
 #if QUEUE_TYPE == 1
                 message = queue.dequeue();
@@ -532,10 +541,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK == 1
             const auto pop_start = clock::now();
 #endif
-#if RUN_CHECKS
-            const auto pop_r =
-#endif
-                evented->pop_write();
+            [[maybe_unused]] const auto pop_r = evented->pop_write();
 #if BENCHMARK == 1
             const auto pop_completed = clock::now();
             const uint64_t pop_latency = static_cast<uint64_t>(
@@ -608,10 +614,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         const auto pop_start = clock::now();
 #endif
 
-#if RUN_CHECKS
-        const auto pop_r =
-#endif
-            evented->pop_write();
+        [[maybe_unused]] const auto pop_r = evented->pop_write();
 
 #if BENCHMARK == 1
         const auto completed = clock::now();
@@ -688,10 +691,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             benchmark_completed - benchmark_start)
             .count());
 
-    const double elapsed_seconds = static_cast<double>(elapsed_ns) / 1.0e9L;
+    const auto elapsed_seconds = elapsed_ns / 1.0e9L;
 
-    const double lines_per_second =
-        static_cast<double>(consumed_lines) / elapsed_seconds;
+    const auto lines_per_second = consumed_lines / elapsed_seconds;
 
 #if BENCHMARK == 1
     REQUIRE(!stats.pop_io_samples.empty());
@@ -709,8 +711,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         return values[index];
     };
 
-    const double mib_per_second =
-        static_cast<double>(stats.bytes) / elapsed_seconds / (1 << 20);
+    const auto mib_per_second = stats.bytes / elapsed_seconds / (1 << 20);
 
     const double avg_falloc_ns =
         static_cast<double>(stats.falloc_total_ns) /
@@ -742,10 +743,10 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     std::ostringstream report;
 
     const auto reduce_as_micros =
-        [](const std::vector<uint64_t> samples) -> uint64_t {
-        return std::transform_reduce(
-            samples.begin(), samples.end(), 0.0L, std::plus<>{},
-            [](const uint64_t ns) { return static_cast<double>(ns) / 1.0e3L; });
+        [](const std::vector<uint64_t> &samples) -> auto {
+        return std::transform_reduce(samples.begin(), samples.end(), 0.0L,
+                                     std::plus<>{},
+                                     [](const auto ns) { return ns / 1.0e3L; });
     };
 
     std::sort(stats.falloc_samples.begin(), stats.falloc_samples.end());
@@ -767,10 +768,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                                std::make_move_iterator(samples.end()));
     }
     const double avg_enqueue_ns = std::transform_reduce(
-        enqueue_samples.begin(), enqueue_samples.end(), 0.0,
-        [](const double a, const double b) { return a + b; },
+        enqueue_samples.begin(), enqueue_samples.end(), 0.0L, std::plus<>{},
         [&enqueue_samples](const auto ns) {
-            return static_cast<double>(ns) / enqueue_samples.size();
+            return static_cast<long double>(ns) / enqueue_samples.size();
         });
     std::sort(enqueue_samples.begin(), enqueue_samples.end());
 
@@ -916,8 +916,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
     MESSAGE(report.str());
 #elif BENCHMARK == 2
-    const double mib_per_second =
-        static_cast<double>(byte_count) / elapsed_seconds / (1 << 20);
+    const auto mib_per_second = byte_count / elapsed_seconds / (1 << 20);
 
     std::ostringstream report;
     report << "\n"
