@@ -1,6 +1,7 @@
 #include "shclog/io/process.hpp"
+#include "shclog/cast.hpp"
 #include "shclog/io/syscall.hpp"
-#include <cstdint>
+#include "shclog/types.hpp"
 #include <optional>
 #include <pthread.h>
 #include <sys/resource.h>
@@ -17,10 +18,10 @@ pthread_t_uwrap(const std::optional<const pthread_t> target) noexcept {
     return pthread_self();
 }
 
-SetPriorityResult set_priority(const int32_t niceness,
+SetPriorityResult set_priority(const i32 niceness,
                                const std::optional<pid_t> target) noexcept {
-    const auto rc = setpriority(
-        PRIO_PROCESS, target.value_or(static_cast<pid_t>(0)), niceness);
+    const auto rc =
+        setpriority(PRIO_PROCESS, int_cast(target.value_or(0)), niceness);
 
     if (rc >= 0) [[likely]]
         return SetPriorityResult::Success;

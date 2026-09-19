@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cstdint>
+#include "shclog/types.hpp"
 #include <optional>
 #include <pthread.h>
 namespace shclog::io::process {
 
-enum SetPriorityResult : uint8_t {
+enum SetPriorityResult : u8 {
     Success,
     InvalidParam,
     AccessDenied,
@@ -15,6 +15,6 @@ enum SetPriorityResult : uint8_t {
 pthread_t pthread_t_uwrap(const std::optional<const pthread_t> target) noexcept;
 
 SetPriorityResult
-set_priority(const int32_t niceness,
+set_priority(const i32 niceness,
              const std::optional<pid_t> target = std::nullopt) noexcept;
 } // namespace shclog::io::process

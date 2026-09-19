@@ -1,11 +1,12 @@
 #include "shclog/io/syscall.hpp"
+#include "shclog/types.hpp"
 #include <sys/mman.h>
 
 namespace shclog::io::mmap {
 using namespace shclog::io::syscall;
 
-void munmap(void *const ptr, const size_t size) noexcept {
-    const int rc = ::munmap(ptr, size);
+void munmap(void *const ptr, const usize size) noexcept {
+    const c_int rc = ::munmap(ptr, size);
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;

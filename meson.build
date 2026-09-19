@@ -9,11 +9,24 @@ project(
 cc = meson.get_compiler('cpp')
 
 add_project_arguments(
-  cc.get_supported_arguments('-Wno-interference-size'),
+  cc.get_supported_arguments(
+    '-Wno-interference-size',
+    # signed <-> unsigned (not covered by -Wconversion)
+    '-Wsign-conversion',
+    # covers narrowing
+    '-Wconversion',
+    # covers after promotion casting
+    '-Warith-conversion',
+    # nukes C-style cast
+    '-Wold-style-cast',
+    '-Wuseless-cast',
+    '-Wcast-align=strict',
+    # overflow
+    '-Wshift-overflow=2',
+  ),
   '-Wall',
   '-Wextra',
   '-Wpedantic',
-  # '-Werror=sign-conversion',
   '-fno-exceptions',
   '-march=native',
   language: 'cpp',

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstdint>
+#include "shclog/types.hpp"
 #include <expected>
 #include <fcntl.h>
 #include <span>
@@ -8,12 +8,12 @@
 #include <utility>
 
 namespace shclog::io::file {
-using fd_t = int;
+using fd_t = c_int;
 constexpr fd_t invalid_fd = -1;
 
 class unique_fd {
   public:
-    explicit unique_fd(int fd = -1) noexcept : fd(fd) {}
+    explicit unique_fd(fd_t fd = -1) noexcept : fd(fd) {}
 
     ~unique_fd() noexcept {
         if (fd != -1)
@@ -35,9 +35,9 @@ class unique_fd {
 
     [[nodiscard]] fd_t get() const noexcept { return fd; }
 
-    int release() noexcept { return std::exchange(fd, -1); }
+    fd_t release() noexcept { return std::exchange(fd, -1); }
 
-    void reset(int fd = -1) noexcept {
+    void reset(fd_t fd = -1) noexcept {
         if (this->fd != -1)
             close(this->fd);
 
@@ -50,7 +50,7 @@ class unique_fd {
     fd_t fd;
 };
 
-enum OpenError : uint8_t {
+enum OpenError : u8 {
     RetryableWithoutCache,
     PathContainsLink,
     PathCrossesMount,
@@ -77,7 +77,7 @@ std::expected<fd_t, OpenError> open(const char *const path,
                                     const ::open_how *const how,
                                     fd_t cwd = AT_FDCWD) noexcept;
 
-enum class OpenMode : uint8_t {
+enum class OpenMode : u8 {
     read = O_RDONLY,
     write = O_WRONLY,
     read_write = O_RDWR,
@@ -85,26 +85,25 @@ enum class OpenMode : uint8_t {
 
 std::expected<unique_fd, OpenError>
 tmpfile(const OpenMode openMode = OpenMode::read_write,
-        const uint64_t flags = O_CLOEXEC, const uint64_t mode = 0600) noexcept;
+        const u64 flags = O_CLOEXEC, const u64 mode = 0600) noexcept;
 
 // TODO: unroll errors
-enum class WriteError : uint8_t {
+enum class WriteError : u8 {
     Unexpected,
 };
 
-std::expected<uint64_t, WriteError> pwrite64(const fd_t fd,
-                                             const std::span<const uint8_t> buf,
-                                             const int64_t offset);
+std::expected<u64, WriteError>
+pwrite64(const fd_t fd, const std::span<const u8> buf, const i64 offset);
 
 // TODO: unroll errors
-enum class WritevError : uint8_t {
+enum class WritevError : u8 {
     Unexpected,
 };
 
-std::expected<uint64_t, WritevError>
-pwritev(const fd_t fd, const std::span<const iovec> buf, const int64_t offset);
+std::expected<u64, WritevError>
+pwritev(const fd_t fd, const std::span<const iovec> buf, const i64 offset);
 
-enum class ReadError : uint8_t {
+enum class ReadError : u8 {
     TemporarilyUnavailable,
     BadFd,
     FdIsDir,
@@ -115,6 +114,6 @@ enum class ReadError : uint8_t {
     Unexpected,
 };
 
-std::expected<uint64_t, ReadError>
-pread(const fd_t fd, const std::span<uint8_t> buf, const int64_t offset);
+std::expected<u64, ReadError> pread(const fd_t fd, const std::span<u8> buf,
+                                    const i64 offset);
 } // namespace shclog::io::file

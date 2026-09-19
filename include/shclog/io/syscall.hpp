@@ -1,14 +1,14 @@
 #pragma once
 
+#include "shclog/types.hpp"
 #include <cerrno>
-#include <cstdint>
 #include <limits>
 #include <source_location>
 
 namespace shclog::io::syscall {
 
 // I shamelessly stole this from zig
-enum Errno : uint16_t {
+enum Errno : u16 {
     // No error occurred.
     // Same code used for `NSROK`.
     SUCCESS = 0,
@@ -315,19 +315,19 @@ enum Errno : uint16_t {
     // Domain name is too long
     NSRCNAMELOOP = 177,
 
-    UNEXPECTED = std::numeric_limits<uint16_t>::max(),
+    UNEXPECTED = std::numeric_limits<u16>::max(),
 
 };
 
-Errno io_uring_errno(const int64_t rc) noexcept;
+Errno io_uring_errno(const i64 rc) noexcept;
 
-Errno from_errno(const uint64_t rc) noexcept;
+Errno from_errno(const u64 rc) noexcept;
 
-Errno e_errno(const int64_t rc) noexcept;
+Errno e_errno(const i64 rc) noexcept;
 
 Errno e_errno(const void *rc) noexcept;
 
 Errno debug_e_errno(
-    const int32_t e_errno = errno,
+    const i32 e_errno = errno,
     const std::source_location loc = std::source_location::current()) noexcept;
 } // namespace shclog::io::syscall

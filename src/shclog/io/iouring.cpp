@@ -1,12 +1,13 @@
 #include "shclog/io/iouring.hpp"
+#include "shclog/types.hpp"
 #include <asm/unistd_64.h>
 #include <utility>
 
 namespace shclog::io::iouring {
 
 const std::expected<const fd_t, IoUringSetupError>
-io_uring_setup(io_uring_params &params, const uint32_t capacity) noexcept {
-    const int64_t rc = ::syscall(__NR_io_uring_setup, capacity, &params);
+io_uring_setup(io_uring_params &params, const u32 capacity) noexcept {
+    const i64 rc = ::syscall(__NR_io_uring_setup, capacity, &params);
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
         break;
@@ -28,13 +29,12 @@ io_uring_setup(io_uring_params &params, const uint32_t capacity) noexcept {
     return static_cast<fd_t>(rc);
 }
 
-const std::expected<const uint32_t, IoUringEnterError>
-io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
-               const uint32_t min_complete, const uint32_t flags,
-               sigset_t *sig) noexcept {
+const std::expected<const u32, IoUringEnterError>
+io_uring_enter(const fd_t ring_fd, const u32 to_submit, const u32 min_complete,
+               const u32 flags, sigset_t *sig) noexcept {
 
-    const int64_t rc = ::syscall(__NR_io_uring_enter, ring_fd, to_submit,
-                                 min_complete, flags, sig);
+    const i64 rc = ::syscall(__NR_io_uring_enter, ring_fd, to_submit,
+                             min_complete, flags, sig);
     if (rc < 0) [[unlikely]]
         switch (e_errno(rc)) {
         case Errno::SUCCESS:
@@ -53,14 +53,14 @@ io_uring_enter(const fd_t ring_fd, const uint32_t to_submit,
             return std::unexpected(IoUringEnterError::Unexpected);
         }
 
-    return static_cast<uint32_t>(rc);
+    return static_cast<u32>(rc);
 }
 
-const std::expected<const uint32_t, IoUringRegisterError>
-io_uring_register(const fd_t ring_fd, const uint32_t opcode, const void *arg,
-                  uint32_t nr_args) noexcept {
+const std::expected<const u32, IoUringRegisterError>
+io_uring_register(const fd_t ring_fd, const u32 opcode, const void *arg,
+                  u32 nr_args) noexcept {
 
-    const int64_t rc =
+    const i64 rc =
         ::syscall(__NR_io_uring_register, ring_fd, opcode, arg, nr_args);
 
     switch (e_errno(rc)) {
@@ -90,6 +90,6 @@ io_uring_register(const fd_t ring_fd, const uint32_t opcode, const void *arg,
         return std::unexpected(IoUringRegisterError::Unexpected);
     }
 
-    return static_cast<uint32_t>(rc);
+    return static_cast<u32>(rc);
 }
 } // namespace shclog::io::iouring

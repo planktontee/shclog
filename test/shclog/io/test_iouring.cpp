@@ -1,4 +1,3 @@
-#include "shclog/io/syscall.hpp"
 #include <algorithm>
 #include <array>
 #include <asm/unistd_64.h>
@@ -32,11 +31,15 @@
 #include <vector>
 #define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
 #include "doctest.h"
+#include "shclog/cast.hpp"
 #include "shclog/io/cpu.hpp"
 #include "shclog/io/iouring.hpp"
 #include "shclog/io/process.hpp"
+#include "shclog/io/syscall.hpp"
 #include "shclog/mpsc_queue.hpp"
+#include "shclog/types.hpp"
 
+using namespace shclog;
 using namespace shclog::io;
 using namespace shclog::io::iouring;
 using namespace shclog::io::cpu;
@@ -60,7 +63,7 @@ TEST_CASE("Pwritev/read with ring") {
     const fd_t tmp_fd_idx = 0;
 
     char w_buf_1[] = "hello world!!!!\n";
-    uint8_t r_buf_1[12]{};
+    u8 r_buf_1[12]{};
     const iovec buffers[2] = {
         {.iov_base = w_buf_1, .iov_len = 16},
         {.iov_base = r_buf_1, .iov_len = 12},
@@ -103,8 +106,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     CHECK(cpu_cores_r.has_value());
     const auto &cores = cpu_cores_r.value();
 
-    const std::set<size_t> target_cores = [&] {
-        std::set<size_t> shadow;
+    const std::set<usize> target_cores = [&] {
+        std::set<usize> shadow;
         for (const auto &core : cores)
             shadow.insert(core.siblings[0]);
         if (shadow.size() == 0)
@@ -113,56 +116,55 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     }();
 
     // MAX - main - iouring
-    const size_t PRODUCERS =
-        std::max(static_cast<size_t>(1),
-                 std::sub_sat(target_cores.size(), static_cast<size_t>(2)));
+    const usize PRODUCERS =
+        std::max(usize{1}, std::sub_sat(target_cores.size(), usize{2}));
     // this should be a ratio for MAX_HW_CORES
-    constexpr size_t LINES_PER_PRODUCER = (1L << 10) * 512;
+    constexpr usize LINES_PER_PRODUCER = (1L << 10) * 512;
 #if QUEUE_TYPE != 2
-    constexpr size_t QUEUE_CAPACITY = (1L << 10) * 32;
+    constexpr usize QUEUE_CAPACITY = (1L << 10) * 32;
 #endif
-    constexpr size_t MAX_IO_BYTES = (1L << 10) * 128;
-    constexpr size_t MIN_LEN = 128;
-    constexpr size_t MAX_LINE_LEN = (1L << 10) * 2;
+    constexpr usize MAX_IO_BYTES = (1L << 10) * 128;
+    constexpr usize MIN_LEN = 128;
+    constexpr usize MAX_LINE_LEN = (1L << 10) * 2;
 #else
-    constexpr size_t PRODUCERS = 3;
-    constexpr size_t LINES_PER_PRODUCER = (1L << 5);
+    constexpr usize PRODUCERS = 3;
+    constexpr usize LINES_PER_PRODUCER = (1L << 5);
 #if QUEUE_TYPE != 2
-    constexpr size_t QUEUE_CAPACITY = 512;
+    constexpr usize QUEUE_CAPACITY = 512;
 #endif
-    constexpr size_t MAX_IO_BYTES = (1L << 10);
-    constexpr size_t MIN_LEN = 64;
-    constexpr size_t MAX_LINE_LEN = 256;
+    constexpr usize MAX_IO_BYTES = (1L << 10);
+    constexpr usize MIN_LEN = 64;
+    constexpr usize MAX_LINE_LEN = 256;
 #endif
-    const size_t TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
-    constexpr size_t IO_BUFFERS = 2;
+    const usize TOTAL_LINES = PRODUCERS * LINES_PER_PRODUCER;
+    constexpr usize IO_BUFFERS = 2;
     constexpr auto TARGET_FLUSH =
-        std::chrono::nanoseconds(static_cast<uint64_t>(1e9 / 30));
-    constexpr size_t PREALLOC_CHUNK = MAX_IO_BYTES << 8;
-    constexpr size_t ALLOC_WATERMARK = MAX_IO_BYTES << 1;
+        std::chrono::nanoseconds(static_cast<u64>(1e9 / 30));
+    constexpr usize PREALLOC_CHUNK = MAX_IO_BYTES << 8;
+    constexpr usize ALLOC_WATERMARK = MAX_IO_BYTES << 1;
 
     struct Message {
 #if QUEUE_TYPE == 2
         Node node;
 #endif
-        uint8_t *data;
-        const size_t size;
+        u8 *data;
+        const usize size;
 
-        explicit Message(const size_t size) noexcept
+        explicit Message(const usize size) noexcept
             :
 #if QUEUE_TYPE == 2
               node(),
 #endif
-              data(reinterpret_cast<uint8_t *>(this + 1)), size(size) {
+              data(reinterpret_cast<u8 *>(this + 1)), size(size) {
         }
 
-        std::span<uint8_t> bytes() noexcept { return {data, size}; }
+        std::span<u8> bytes() noexcept { return {data, size}; }
 
-        [[nodiscard]] std::span<const uint8_t> bytes() const noexcept {
+        [[nodiscard]] std::span<const u8> bytes() const noexcept {
             return {data, size};
         }
 
-        static void *operator new(const size_t header, const size_t payload,
+        static void *operator new(const usize header, const usize payload,
                                   const std::nothrow_t &) noexcept {
             return ::operator new(header + payload, std::nothrow);
         }
@@ -171,7 +173,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             ::operator delete(p);
         }
 
-        static void operator delete(void *const p, size_t,
+        static void operator delete(void *const p, usize,
                                     const std::nothrow_t &) noexcept {
             ::operator delete(p);
         }
@@ -179,48 +181,48 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
 #if BENCHMARK == 1
     struct Stats {
-        uint64_t falloc_total_ns = 0;
-        uint64_t falloc_min_ns = UINT64_MAX;
-        uint64_t falloc_max_ns = 0;
+        u64 falloc_total_ns = 0;
+        u64 falloc_min_ns = UINT64_MAX;
+        u64 falloc_max_ns = 0;
 
-        uint64_t queue_total_ns = 0;
-        uint64_t queue_min_ns = UINT64_MAX;
-        uint64_t queue_max_ns = 0;
+        u64 queue_total_ns = 0;
+        u64 queue_min_ns = UINT64_MAX;
+        u64 queue_max_ns = 0;
 
-        uint64_t memcpy_total_ns = 0;
-        uint64_t memcpy_min_ns = UINT64_MAX;
-        uint64_t memcpy_max_ns = 0;
+        u64 memcpy_total_ns = 0;
+        u64 memcpy_min_ns = UINT64_MAX;
+        u64 memcpy_max_ns = 0;
 
-        uint64_t free_total_ns = 0;
-        uint64_t free_min_ns = UINT64_MAX;
-        uint64_t free_max_ns = 0;
+        u64 free_total_ns = 0;
+        u64 free_min_ns = UINT64_MAX;
+        u64 free_max_ns = 0;
 
-        uint64_t push_io_total_ns = 0;
-        uint64_t push_io_min_ns = UINT64_MAX;
-        uint64_t push_io_max_ns = 0;
+        u64 push_io_total_ns = 0;
+        u64 push_io_min_ns = UINT64_MAX;
+        u64 push_io_max_ns = 0;
 
-        uint64_t pop_io_total_ns = 0;
-        uint64_t pop_io_min_ns = UINT64_MAX;
-        uint64_t pop_io_max_ns = 0;
+        u64 pop_io_total_ns = 0;
+        u64 pop_io_min_ns = UINT64_MAX;
+        u64 pop_io_max_ns = 0;
 
-        std::vector<uint64_t> msg_alloc_samples;
-        std::vector<uint64_t> falloc_samples;
-        std::vector<uint64_t> free_samples;
-        std::vector<uint64_t> queue_samples;
-        std::vector<uint64_t> memcpy_samples;
-        std::vector<uint64_t> push_io_samples;
-        std::vector<uint64_t> pop_io_samples;
+        std::vector<u64> msg_alloc_samples;
+        std::vector<u64> falloc_samples;
+        std::vector<u64> free_samples;
+        std::vector<u64> queue_samples;
+        std::vector<u64> memcpy_samples;
+        std::vector<u64> push_io_samples;
+        std::vector<u64> pop_io_samples;
 
-        uint64_t bytes = 0;
+        u64 bytes = 0;
 
-        uint64_t writes = 0;
-        uint64_t total_batch_lines = 0;
-        uint64_t max_batch_lines = 0;
+        u64 writes = 0;
+        u64 total_batch_lines = 0;
+        u64 max_batch_lines = 0;
 
-        std::vector<std::vector<uint64_t>> producer_enqueue_samples;
+        std::vector<std::vector<u64>> producer_enqueue_samples;
 
-        Stats(const size_t consumer_capacity, const size_t producers_n,
-              const size_t producer_capacity, const size_t max_line_len) {
+        Stats(const usize consumer_capacity, const usize producers_n,
+              const usize producer_capacity, const usize max_line_len) {
 
             falloc_samples.reserve(max_line_len * consumer_capacity /
                                    ALLOC_WATERMARK);
@@ -232,7 +234,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             pop_io_samples.reserve(consumer_capacity);
 
             producer_enqueue_samples =
-                std::vector<std::vector<uint64_t>>(producers_n);
+                std::vector<std::vector<u64>>(producers_n);
             for (auto &samples : producer_enqueue_samples)
                 samples.reserve(producer_capacity);
         }
@@ -240,24 +242,23 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
     Stats stats(TOTAL_LINES, PRODUCERS, LINES_PER_PRODUCER, MAX_LINE_LEN);
 #elif BENCHMARK == 2
-    uint64_t byte_count = 0;
+    u64 byte_count = 0;
 #endif
 
     const auto make_line =
         [](std::mt19937_64 &rng) -> std::unique_ptr<Message> {
-        std::uniform_int_distribution<size_t> length_dist(MIN_LEN,
-                                                          MAX_LINE_LEN);
+        std::uniform_int_distribution<usize> length_dist(MIN_LEN, MAX_LINE_LEN);
 
-        std::uniform_int_distribution<int> character_dist(32, 126);
+        std::uniform_int_distribution<i32> character_dist(32, 126);
 
-        const size_t len = length_dist(rng);
+        const usize len = length_dist(rng);
         auto message =
             std::unique_ptr<Message>(new (len, std::nothrow) Message(len));
         if (!message) [[unlikely]]
             std::abort();
 
-        for (size_t i = 0; i + 1 < len; ++i)
-            message->data[i] = static_cast<char>(character_dist(rng));
+        for (usize i = 0; i + 1 < len; ++i)
+            message->data[i] = int_cast(character_dist(rng));
         message->data[len - 1] = '\n';
 
         return message;
@@ -297,11 +298,11 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 
 #if RUN_CHECKS
-    std::vector<uint8_t> expected;
+    std::vector<u8> expected;
     expected.reserve(TOTAL_LINES * MAX_LINE_LEN);
 #endif
 
-    std::atomic<size_t> producers_finished = 0;
+    std::atomic<usize> producers_finished = 0;
     std::vector<std::jthread> producers;
     producers.reserve(PRODUCERS);
 #if BENCHMARK
@@ -309,15 +310,14 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     auto cpu_view =
         std::views::iota(*target_cores.begin(), *target_cores.rbegin() + 1) |
         std::views::filter(
-            [&target_cores](size_t x) { return target_cores.contains(x); });
+            [&target_cores](usize x) { return target_cores.contains(x); });
     CHECK(SetCpuAffinityResult::Success == set_cpu_afinity(cpu_view));
 
     REQUIRE(target_cores.size() >= 1);
-    const std::vector<size_t> core_arr(target_cores.begin(),
-                                       target_cores.end());
+    const std::vector<usize> core_arr(target_cores.begin(), target_cores.end());
 
-    const size_t main_cpu = static_cast<size_t>(sched_getcpu());
-    const auto pick_cpu = [main_cpu, &core_arr](const size_t target) -> size_t {
+    const usize main_cpu = int_cast<usize>(sched_getcpu());
+    const auto pick_cpu = [main_cpu, &core_arr](const usize target) -> usize {
         const auto idx = target % core_arr.size();
         if (core_arr[idx] >= main_cpu)
             return core_arr[(idx + 1) % core_arr.size()];
@@ -326,9 +326,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     };
 #endif
 
-    assert(std::in_range<long>(PRODUCERS + 1));
-    std::barrier ready(static_cast<long>(PRODUCERS + 1));
-    for (size_t producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
+    std::barrier ready(int_cast<isize>(PRODUCERS + 1));
+    for (usize producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
         producers.emplace_back([&, producer_id] {
 #if BENCHMARK
             CHECK(SetCpuAffinityResult::Success ==
@@ -338,7 +337,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             ready.arrive_and_wait();
             std::mt19937_64 rng(0x8f3a21c7d94e6b5ULL + producer_id);
 
-            for (size_t line = 0; line < LINES_PER_PRODUCER; ++line) {
+            for (usize line = 0; line < LINES_PER_PRODUCER; ++line) {
                 auto message = make_line(rng);
 #if BENCHMARK == 1
                 const auto enqueue_start = clock::now();
@@ -356,7 +355,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 #if BENCHMARK == 1
                 const auto enqueue_completed = clock::now();
-                const uint64_t enqueue_latency = static_cast<uint64_t>(
+                const u64 enqueue_latency = static_cast<u64>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         enqueue_completed - enqueue_start)
                         .count());
@@ -370,7 +369,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         });
     }
 
-    alignas(4096) std::array<std::array<uint8_t, MAX_IO_BYTES>, IO_BUFFERS>
+    alignas(4096) std::array<std::array<u8, MAX_IO_BYTES>, IO_BUFFERS>
         buffers{};
 
     const iovec reg_buf[2] = {
@@ -385,15 +384,15 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     CHECK(reg_bufs_r);
 #endif
 
-    std::array<size_t, IO_BUFFERS> line_count{};
-    std::array<uint64_t, IO_BUFFERS> io_bytes{};
+    std::array<usize, IO_BUFFERS> line_count{};
+    std::array<u64, IO_BUFFERS> io_bytes{};
     std::array<bool, IO_BUFFERS> in_flight{};
 
-    uint64_t file_offset = 0;
-    size_t active_buffer = 0;
-    size_t consumed_lines = 0;
+    u64 file_offset = 0;
+    usize active_buffer = 0;
+    usize consumed_lines = 0;
     std::unique_ptr<Message> overflow = nullptr;
-    size_t last_expand = 0;
+    usize last_expand = 0;
 
     ready.arrive_and_wait();
 #if BENCHMARK
@@ -417,10 +416,10 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             assert(std::in_range<off_t>(last_expand));
             [[maybe_unused]] auto rc =
                 fallocate(tmp_fd.get(), FALLOC_FL_KEEP_SIZE,
-                          static_cast<off_t>(last_expand), PREALLOC_CHUNK);
+                          int_cast<off_t>(last_expand), PREALLOC_CHUNK);
 #if BENCHMARK == 1
             const auto falloc_end = clock::now();
-            const uint64_t falloc_ns = static_cast<uint64_t>(
+            const u64 falloc_ns = static_cast<u64>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     falloc_end - falloc_start)
                     .count());
@@ -456,7 +455,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                 message = std::move(overflow);
 #if BENCHMARK == 1
             const auto queue_end = clock::now();
-            const uint64_t queue_ns = static_cast<uint64_t>(
+            const u64 queue_ns = static_cast<u64>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     queue_end - queue_start)
                     .count());
@@ -493,7 +492,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                 std::memcpy(buffer_iter, data_span.data(), data_span.size());
 #if BENCHMARK == 1
                 const auto memcpy_end = clock::now();
-                const uint64_t memcpy_ns = static_cast<uint64_t>(
+                const u64 memcpy_ns = static_cast<u64>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         memcpy_end - memcpy_start)
                         .count());
@@ -516,7 +515,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                 message.reset();
 #if BENCHMARK == 1
                 const auto free_end = clock::now();
-                const uint64_t free_ns = static_cast<uint64_t>(
+                const u64 free_ns = static_cast<u64>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         free_end - free_start)
                         .count());
@@ -544,7 +543,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             [[maybe_unused]] const auto pop_r = evented->pop_write();
 #if BENCHMARK == 1
             const auto pop_completed = clock::now();
-            const uint64_t pop_latency = static_cast<uint64_t>(
+            const u64 pop_latency = static_cast<u64>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     pop_completed - pop_start)
                     .count());
@@ -556,7 +555,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
 #if RUN_CHECKS
             CHECK(pop_r.value() ==
-                  static_cast<int32_t>(io_bytes[in_flight_buffer]));
+                  static_cast<i32>(io_bytes[in_flight_buffer]));
 #endif
             in_flight[in_flight_buffer] = false;
         }
@@ -569,12 +568,13 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
             evented->push_write(
                 tmp_fd_idx,
-                std::span<const uint8_t>{buffers[active_buffer].data(),
-                                         io_bytes[active_buffer]},
-                file_offset, IOSQE_FIXED_FILE, 0, true, active_buffer);
+                std::span<const u8>{buffers[active_buffer].data(),
+                                    io_bytes[active_buffer]},
+                file_offset, IOSQE_FIXED_FILE, 0, true,
+                int_cast(active_buffer));
 #if BENCHMARK == 1
         const auto push_completed = clock::now();
-        const uint64_t push_latency = static_cast<uint64_t>(
+        const u64 push_latency = static_cast<u64>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 push_completed - push_start)
                 .count());
@@ -589,9 +589,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
 #if BENCHMARK == 1
         ++stats.writes;
-        stats.max_batch_lines =
-            std::max(stats.max_batch_lines,
-                     static_cast<uint64_t>(line_count[active_buffer]));
+        stats.max_batch_lines = std::max(
+            stats.max_batch_lines, static_cast<u64>(line_count[active_buffer]));
         stats.bytes += io_bytes[active_buffer];
 #endif
 
@@ -606,7 +605,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 
     // we get out of the loop for consumer once all producers are done
-    for (size_t buffer = 0; buffer < IO_BUFFERS; ++buffer) {
+    for (usize buffer = 0; buffer < IO_BUFFERS; ++buffer) {
         if (!in_flight[buffer])
             continue;
 
@@ -618,7 +617,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
 #if BENCHMARK == 1
         const auto completed = clock::now();
-        const uint64_t pop_latency = static_cast<uint64_t>(
+        const u64 pop_latency = static_cast<u64>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(completed -
                                                                  pop_start)
                 .count());
@@ -630,7 +629,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
 #if RUN_CHECKS
         REQUIRE(pop_r.has_value());
-        CHECK(pop_r.value() == static_cast<int32_t>(io_bytes[buffer]));
+        CHECK(pop_r.value() == static_cast<i32>(io_bytes[buffer]));
 #endif
 
         in_flight[buffer] = false;
@@ -645,30 +644,30 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             t.join();
 
 #if RUN_CHECKS
-    std::vector<uint8_t> actual(expected.size());
-    size_t read_offset = 0;
+    std::vector<u8> actual(expected.size());
+    usize read_offset = 0;
     while (read_offset < actual.size()) {
-        const size_t remaining = actual.size() - read_offset;
+        const usize remaining = actual.size() - read_offset;
 
-        const size_t chunk = std::min(remaining, MAX_IO_BYTES);
+        const usize chunk = std::min(remaining, MAX_IO_BYTES);
         auto push_r = evented->push_read(
             tmp_fd_idx, std::span{actual.data() + read_offset, chunk},
-            static_cast<off_t>(read_offset), IOSQE_FIXED_FILE);
+            int_cast(read_offset), IOSQE_FIXED_FILE);
 
         CHECK(push_r == EventedIo::PushResult::Success);
 
         const auto pop_r = evented->pop_read();
 
         REQUIRE(pop_r.has_value());
-        CHECK(pop_r.value() == static_cast<int32_t>(chunk));
+        CHECK(pop_r.value() == static_cast<i32>(chunk));
 
         read_offset += chunk;
     }
 
     CHECK(read_offset == expected.size());
 
-    size_t mismatch = expected.size();
-    for (size_t i = 0; i < expected.size(); ++i) {
+    usize mismatch = expected.size();
+    for (usize i = 0; i < expected.size(); ++i) {
         if (actual[i] != expected[i]) {
             mismatch = i;
             break;
@@ -686,10 +685,10 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 
 #if BENCHMARK
-    const auto elapsed_ns = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            benchmark_completed - benchmark_start)
-            .count());
+    const auto elapsed_ns =
+        static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             benchmark_completed - benchmark_start)
+                             .count());
 
     const auto elapsed_seconds = elapsed_ns / 1.0e9L;
 
@@ -699,51 +698,45 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     REQUIRE(!stats.pop_io_samples.empty());
     REQUIRE(!stats.queue_samples.empty());
 
-    const auto percentile = [](std::vector<uint64_t> values,
-                               const double p) -> uint64_t {
+    const auto percentile = [](std::vector<u64> values, const f64 p) -> u64 {
 #if RUN_CHECKS
         CHECK(!values.empty());
 #endif
 
-        const size_t index =
-            static_cast<size_t>(p * static_cast<double>(values.size() - 1));
+        const usize index =
+            int_cast<usize>(p * float_cast<f64>(values.size() - 1));
 
         return values[index];
     };
 
     const auto mib_per_second = stats.bytes / elapsed_seconds / (1 << 20);
 
-    const double avg_falloc_ns =
-        static_cast<double>(stats.falloc_total_ns) /
-        static_cast<double>(stats.falloc_samples.size());
+    const f64 avg_falloc_ns = float_cast<f64>(stats.falloc_total_ns) /
+                              float_cast<f64>(stats.falloc_samples.size());
 
-    const double avg_push_io_ns =
-        static_cast<double>(stats.push_io_total_ns) /
-        static_cast<double>(stats.push_io_samples.size());
-    const double avg_pop_io_ns =
-        static_cast<double>(stats.pop_io_total_ns) /
-        static_cast<double>(stats.pop_io_samples.size());
+    const f64 avg_push_io_ns = float_cast<f64>(stats.push_io_total_ns) /
+                               float_cast<f64>(stats.push_io_samples.size());
+    const f64 avg_pop_io_ns = float_cast<f64>(stats.pop_io_total_ns) /
+                              float_cast<f64>(stats.pop_io_samples.size());
 
-    const double avg_queue_ns = static_cast<double>(stats.queue_total_ns) /
-                                static_cast<double>(stats.queue_samples.size());
+    const f64 avg_queue_ns = float_cast<f64>(stats.queue_total_ns) /
+                             float_cast<f64>(stats.queue_samples.size());
 
-    const double avg_memcpy_ns =
-        static_cast<double>(stats.memcpy_total_ns) /
-        static_cast<double>(stats.memcpy_samples.size());
+    const f64 avg_memcpy_ns = float_cast<f64>(stats.memcpy_total_ns) /
+                              float_cast<f64>(stats.memcpy_samples.size());
 
-    const double avg_free_ns = static_cast<double>(stats.free_total_ns) /
-                               static_cast<double>(stats.free_samples.size());
+    const f64 avg_free_ns = float_cast<f64>(stats.free_total_ns) /
+                            float_cast<f64>(stats.free_samples.size());
 
-    const double avg_batch_lines =
-        static_cast<double>(consumed_lines) / static_cast<double>(stats.writes);
+    const f64 avg_batch_lines =
+        float_cast<f64>(consumed_lines) / float_cast<f64>(stats.writes);
 
-    const double avg_write_bytes =
-        static_cast<double>(stats.bytes) / static_cast<double>(stats.writes);
+    const f64 avg_write_bytes =
+        float_cast<f64>(stats.bytes) / float_cast<f64>(stats.writes);
 
     std::ostringstream report;
 
-    const auto reduce_as_micros =
-        [](const std::vector<uint64_t> &samples) -> auto {
+    const auto reduce_as_micros = [](const std::vector<u64> &samples) -> auto {
         return std::transform_reduce(samples.begin(), samples.end(), 0.0L,
                                      std::plus<>{},
                                      [](const auto ns) { return ns / 1.0e3L; });
@@ -756,9 +749,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     std::sort(stats.pop_io_samples.begin(), stats.pop_io_samples.end());
     std::sort(stats.push_io_samples.begin(), stats.push_io_samples.end());
 
-    uint64_t enqueue_max_ns = 0;
-    uint64_t enqueue_min_ns = UINT64_MAX;
-    std::vector<uint64_t> enqueue_samples;
+    u64 enqueue_max_ns = 0;
+    u64 enqueue_min_ns = UINT64_MAX;
+    std::vector<u64> enqueue_samples;
     enqueue_samples.reserve(LINES_PER_PRODUCER);
     for (auto &samples : stats.producer_enqueue_samples) {
         enqueue_max_ns = std::max(enqueue_max_ns, std::ranges::max(samples));
@@ -767,10 +760,11 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                                std::make_move_iterator(samples.begin()),
                                std::make_move_iterator(samples.end()));
     }
-    const double avg_enqueue_ns = std::transform_reduce(
+    const auto avg_enqueue_ns = std::transform_reduce(
         enqueue_samples.begin(), enqueue_samples.end(), 0.0L, std::plus<>{},
         [&enqueue_samples](const auto ns) {
-            return static_cast<long double>(ns) / enqueue_samples.size();
+            return float_cast<f80>(ns) /
+                   float_cast<f80>(enqueue_samples.size());
         });
     std::sort(enqueue_samples.begin(), enqueue_samples.end());
 

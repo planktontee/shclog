@@ -2,6 +2,7 @@
 
 #include "shclog/io/file.hpp"
 #include "shclog/io/syscall.hpp"
+#include "shclog/types.hpp"
 #include <expected>
 #include <memory>
 #include <sys/mman.h>
@@ -11,14 +12,14 @@ namespace shclog::io::mmap {
 using namespace shclog::io::syscall;
 using namespace shclog::io::file;
 struct MmapDeleter {
-    size_t size;
+    usize size;
     void operator()(void *const ptr) const {
         if (ptr)
             munmap(ptr, size);
     }
 };
 
-enum MmapError : uint8_t {
+enum MmapError : u8 {
     AccessDenied,
     PermissionDenied,
     LockedMemoryLimitExceeded,
@@ -33,12 +34,12 @@ enum MmapError : uint8_t {
 
 template <typename R>
 std::expected<std::unique_ptr<R, MmapDeleter>, MmapError>
-mmap(const size_t len, void *addr = nullptr,
-     const int prot = PROT_READ | PROT_WRITE,
-     const int flags = MAP_PRIVATE | MAP_ANONYMOUS, const fd_t fd = invalid_fd,
-     int64_t offset = 0) {
+mmap(const usize len, void *addr = nullptr,
+     const c_int prot = PROT_READ | PROT_WRITE,
+     const c_int flags = MAP_PRIVATE | MAP_ANONYMOUS,
+     const fd_t fd = invalid_fd, i64 offset = 0) {
 
-    const size_t total_bytes = len * sizeof(R);
+    const usize total_bytes = len * sizeof(R);
     void *const rc = ::mmap(addr, total_bytes, prot, flags, fd, offset);
     switch (e_errno(rc)) {
     case Errno::SUCCESS:
@@ -71,5 +72,5 @@ mmap(const size_t len, void *addr = nullptr,
                                            MmapDeleter(total_bytes));
 }
 
-void munmap(void *const ptr, const size_t size) noexcept;
+void munmap(void *const ptr, const usize size) noexcept;
 } // namespace shclog::io::mmap

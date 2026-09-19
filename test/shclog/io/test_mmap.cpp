@@ -3,12 +3,14 @@
 #include <sys/mman.h>
 
 #include "shclog/io/mmap.hpp"
+#include "shclog/types.hpp"
 
+using namespace shclog;
 using namespace shclog::io::mmap;
 
 TEST_CASE("Basic mmap/munmap") {
-    constexpr size_t target_len = 4096 / sizeof(int);
-    auto r = mmap<int>(target_len);
+    constexpr usize target_len = 4096 / sizeof(i32);
+    auto r = mmap<i32>(target_len);
     REQUIRE(r.has_value());
 
     auto ptr = std::move(r.value());

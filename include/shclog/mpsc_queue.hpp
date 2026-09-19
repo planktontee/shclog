@@ -1,10 +1,11 @@
 #pragma once
 
+#include "shclog/cast.hpp"
 #include "shclog/const.hpp"
+#include "shclog/types.hpp"
 #include <atomic>
 #include <cassert>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <emmintrin.h>
 #include <expected>
@@ -30,7 +31,7 @@
 */
 
 namespace shclog::mpsc_queue {
-enum CreateError : uint8_t { InvalidCapacity, AllocationFailed };
+enum CreateError : u8 { InvalidCapacity, AllocationFailed };
 
 template <typename T, typename Deleter = std::default_delete<T>>
 struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
@@ -47,22 +48,22 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
 
     using Buffer = std::unique_ptr<std::atomic<T *>[], AlignedBufferDeleter>;
 
-    alignas(std::hardware_destructive_interference_size)
-        std::atomic<size_t> count{};
     alignas(
-        std::hardware_destructive_interference_size) std::atomic<size_t> head{};
+        std::hardware_destructive_interference_size) std::atomic<usize> count{};
+    alignas(
+        std::hardware_destructive_interference_size) std::atomic<usize> head{};
     alignas(std::hardware_destructive_interference_size) Buffer buffer;
-    alignas(std::hardware_destructive_interference_size) size_t tail{};
+    alignas(std::hardware_destructive_interference_size) usize tail{};
     // padding
-    alignas(std::hardware_destructive_interference_size) const size_t buf_mask;
-    const size_t max;
+    alignas(std::hardware_destructive_interference_size) const usize buf_mask;
+    const usize max;
 
-    MPSCQueue(const size_t capacity, Buffer &&buf_ptr) noexcept
+    MPSCQueue(const usize capacity, Buffer &&buf_ptr) noexcept
         : buffer(std::move(buf_ptr)), buf_mask(capacity - 1), max(capacity) {}
 
   public:
     static std::expected<std::unique_ptr<MPSCQueue<T, Deleter>>, CreateError>
-    create(const size_t capacity) noexcept {
+    create(const usize capacity) noexcept {
         if (capacity < 2 || (capacity & (capacity - 1)) != 0) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::InvalidCapacity);
 
@@ -98,13 +99,13 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         if (count.load(std::memory_order_relaxed) >= max)
             return false;
 
-        const size_t cur_count = count.fetch_add(1, std::memory_order_acquire);
+        const usize cur_count = count.fetch_add(1, std::memory_order_acquire);
         if (cur_count >= max) {
             count.fetch_sub(1, std::memory_order_relaxed);
             return false;
         }
 
-        const size_t h = head.fetch_add(1, std::memory_order_relaxed);
+        const usize h = head.fetch_add(1, std::memory_order_relaxed);
 
         if constexpr (IS_DEBUG) {
             const auto rv = buffer[h & buf_mask].exchange(
@@ -126,7 +127,7 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         tail = (tail + 1) & buf_mask;
 
         if constexpr (IS_DEBUG) {
-            const size_t r = count.fetch_sub(1, std::memory_order_release);
+            const usize r = count.fetch_sub(1, std::memory_order_release);
             assert(r > 0);
         } else
             count.fetch_sub(1, std::memory_order_release);
@@ -134,49 +135,48 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         return std::unique_ptr<T, Deleter>(ret);
     }
 
-    [[nodiscard]] size_t size() const noexcept { return count; }
+    [[nodiscard]] usize size() const noexcept { return count; }
 
-    [[nodiscard]] size_t capacity() const noexcept { return max; }
+    [[nodiscard]] usize capacity() const noexcept { return max; }
 };
 
 // TODO: remove size from template, add more checks
-template <typename T, size_t N, typename Deleter = std::default_delete<T>>
+template <typename T, usize N, typename Deleter = std::default_delete<T>>
 struct MPSCQSlotted {
   private:
     struct alignas(std::hardware_destructive_interference_size) Cell {
-        std::atomic<size_t> seq{};
+        std::atomic<usize> seq{};
         T *data{nullptr};
     };
 
   public:
-    size_t tail;
-    std::atomic<size_t> head;
+    usize tail;
+    std::atomic<usize> head;
 
     Cell buffer[N];
 
-    static constexpr size_t MASK = N - 1;
+    static constexpr usize MASK = N - 1;
 
     MPSCQSlotted() noexcept {
         tail = 0;
         head.store(0, std::memory_order_relaxed);
 
-        for (size_t i = 0; i < N; ++i)
+        for (usize i = 0; i < N; ++i)
             buffer[i].seq.store(i, std::memory_order_relaxed);
 
         std::atomic_thread_fence(std::memory_order_release);
     }
 
     bool enqueue(std::unique_ptr<T, Deleter> &&v) noexcept {
-        // size_t pos = head.value.load(std::memory_order_relaxed);
-        size_t pos = head.fetch_add(1, std::memory_order_relaxed);
+        // usize pos = head.value.load(std::memory_order_relaxed);
+        usize pos = head.fetch_add(1, std::memory_order_relaxed);
 
         Cell *slot = &buffer[pos & MASK];
         // Cell *slot;
         while (true) {
             // slot = &buffer[pos & MASK];
-            const size_t seq = slot->seq.load(std::memory_order_acquire);
-            const intptr_t dif =
-                static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+            const usize seq = slot->seq.load(std::memory_order_acquire);
+            const isize dif = static_cast<isize>(seq) - static_cast<isize>(pos);
             if (dif == 0) {
                 // if (head.compare_exchange_weak(pos, pos + 1,
                 //                                      std::memory_order_relaxed))
@@ -199,10 +199,10 @@ struct MPSCQSlotted {
     std::unique_ptr<T, Deleter> dequeue() noexcept {
         Cell *slot = &buffer[tail & MASK];
 
-        const size_t seq = slot->seq.load(std::memory_order_acquire);
+        const usize seq = slot->seq.load(std::memory_order_acquire);
 
-        const intptr_t dif =
-            static_cast<intptr_t>(seq) - static_cast<intptr_t>(tail + 1);
+        const isize dif =
+            static_cast<isize>(seq) - static_cast<isize>(tail + 1);
         if (dif < 0)
             return nullptr;
 
@@ -226,7 +226,7 @@ template <typename T> inline T *container_of(Node *n) noexcept {
                   "Memory layout has to be C compatible");
     static_assert(HasNodeMember<T>, "T must have a member Node node;");
     auto offset = offsetof(T, node);
-    return reinterpret_cast<T *>(reinterpret_cast<uint8_t *>(n) - offset);
+    return ptr_cast<T>(ptr_cast<u8>(n) - offset);
 }
 
 // TODO: add more checks
