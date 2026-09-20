@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 #define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include "doctest.h"
+#include <doctest/doctest.h>
 #include "shclog/cast.hpp"
 #include "shclog/io/cpu.hpp"
 #include "shclog/io/iouring.hpp"

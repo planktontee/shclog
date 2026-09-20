@@ -164,7 +164,9 @@ struct MPSCQSlotted {
         for (usize i = 0; i < N; ++i)
             buffer[i].seq.store(i, std::memory_order_relaxed);
 
-        std::atomic_thread_fence(std::memory_order_release);
+        // tsan doesnt like hanging fences
+        if constexpr (!IS_TSAN)
+            std::atomic_thread_fence(std::memory_order_release);
     }
 
     bool enqueue(std::unique_ptr<T, Deleter> &&v) noexcept {
@@ -235,11 +237,10 @@ struct UnboundedLinkedMPSCQ {
     static_assert(HasNodeMember<T>, "T must have a member Node node;");
 
   public:
-    UnboundedLinkedMPSCQ() noexcept {
-        stub.next.store(nullptr, std::memory_order::relaxed);
-        head.store(&stub, std::memory_order_relaxed);
-        tail = &stub;
-        std::atomic_thread_fence(std::memory_order_release);
+    UnboundedLinkedMPSCQ() noexcept : head{&stub}, tail{&stub} {
+        // tsan doesnt like hanging fences
+        if constexpr (!IS_TSAN)
+            std::atomic_thread_fence(std::memory_order_release);
     }
 
     ~UnboundedLinkedMPSCQ() {

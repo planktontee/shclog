@@ -1,5 +1,5 @@
 #define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include "doctest.h"
+#include <doctest/doctest.h>
 #include "shclog/cast.hpp"
 #include "shclog/mpsc_queue.hpp"
 #include "shclog/types.hpp"

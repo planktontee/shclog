@@ -51,7 +51,7 @@ shclog_lib = static_library('shclog_lib', shclog_sources, include_directories: s
 # )
 
 ## Tests
-doctest_dep = dependency('doctest', fallback: ['doctest'])
+doctest_dep = dependency('doctest')
 
 shclog_objs = shclog_lib.extract_all_objects(recursive: true)
 test_inc = include_directories('test', 'include')
@@ -75,15 +75,4 @@ test(
   'unit_tests',
   test_exe,
   workdir: meson.current_source_dir() / 'test',
-)
-
-run_target(
-  'test-compile',
-  command: [
-    'sh',
-    '-c', 'ninja -C "$1" clang-tidy && meson test -C "$1" --verbose',
-    'test-compile',
-    meson.project_build_root(),
-  ],
-  depends: test_exe,
 )
