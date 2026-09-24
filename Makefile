@@ -15,6 +15,7 @@ build/release: Makefile
 $(BUILDS): %: build/%
 	meson test -C $< --verbose
 
+# TODO: tidy should run for release too
 tidy: build/debug
 	ninja -C $< clang-tidy
 

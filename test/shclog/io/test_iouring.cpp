@@ -30,7 +30,8 @@
 #include <utility>
 #include <vector>
 #define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include <doctest/doctest.h>
+#include "shclog/bench/sample.hpp"
+#include "shclog/bench/time.hpp"
 #include "shclog/cast.hpp"
 #include "shclog/io/cpu.hpp"
 #include "shclog/io/iouring.hpp"
@@ -38,8 +39,11 @@
 #include "shclog/io/syscall.hpp"
 #include "shclog/mpsc_queue.hpp"
 #include "shclog/types.hpp"
+#include <doctest/doctest.h>
 
 using namespace shclog;
+using namespace shclog::bench::sample;
+using namespace shclog::bench::time;
 using namespace shclog::io;
 using namespace shclog::io::iouring;
 using namespace shclog::io::cpu;
@@ -189,9 +193,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         u64 queue_min_ns = UINT64_MAX;
         u64 queue_max_ns = 0;
 
-        u64 memcpy_total_ns = 0;
-        u64 memcpy_min_ns = UINT64_MAX;
-        u64 memcpy_max_ns = 0;
+        // u64 memcpy_total_ns = 0;
+        // u64 memcpy_min_ns = UINT64_MAX;
+        // u64 memcpy_max_ns = 0;
 
         u64 free_total_ns = 0;
         u64 free_min_ns = UINT64_MAX;
@@ -209,7 +213,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         std::vector<u64> falloc_samples;
         std::vector<u64> free_samples;
         std::vector<u64> queue_samples;
-        std::vector<u64> memcpy_samples;
+        // std::vector<u64> memcpy_samples;
         std::vector<u64> push_io_samples;
         std::vector<u64> pop_io_samples;
 
@@ -228,7 +232,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                                    ALLOC_WATERMARK);
 
             queue_samples.reserve(consumer_capacity);
-            memcpy_samples.reserve(consumer_capacity);
+
             free_samples.reserve(consumer_capacity);
             push_io_samples.reserve(consumer_capacity);
             pop_io_samples.reserve(consumer_capacity);
@@ -241,6 +245,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     };
 
     Stats stats(TOTAL_LINES, PRODUCERS, LINES_PER_PRODUCER, MAX_LINE_LEN);
+    auto samples_r = Sample<u64>::make(TOTAL_LINES);
+    REQUIRE(samples_r.has_value());
+    Sample<u64> memcpy_samples = std::move(samples_r.value());
 #elif BENCHMARK == 2
     u64 byte_count = 0;
 #endif
@@ -326,7 +333,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     };
 #endif
 
-    std::barrier ready(int_cast<isize>(PRODUCERS + 1));
+    const usize barrier_n = PRODUCERS + 1;
+    REQUIRE(barrier_n <= std::barrier<>::max());
+    std::barrier ready(int_cast<isize>(barrier_n));
     for (usize producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
         producers.emplace_back([&, producer_id] {
 #if BENCHMARK
@@ -487,23 +496,15 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
                 io_bytes[active_buffer] += data_span.size();
 #if BENCHMARK == 1
-                const auto memcpy_start = clock::now();
-#endif
-                std::memcpy(buffer_iter, data_span.data(), data_span.size());
-#if BENCHMARK == 1
-                const auto memcpy_end = clock::now();
-                const u64 memcpy_ns = static_cast<u64>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        memcpy_end - memcpy_start)
-                        .count());
-
-                stats.memcpy_total_ns += memcpy_ns;
-                stats.memcpy_min_ns = std::min(stats.memcpy_min_ns, memcpy_ns);
-                stats.memcpy_max_ns = std::max(stats.memcpy_max_ns, memcpy_ns);
-                stats.memcpy_samples.push_back(memcpy_ns);
-
+                timed(memcpy_samples, [&]() noexcept {
+                    std::memcpy(buffer_iter, data_span.data(),
+                                data_span.size());
+                });
 #elif BENCHMARK == 2
+                std::memcpy(buffer_iter, data_span.data(), data_span.size());
                 byte_count += data_span.size();
+#else
+                std::memcpy(buffer_iter, data_span.data(), data_span.size());
 #endif
                 buffer_iter += data_span.size();
                 ++line_count[active_buffer];
@@ -698,7 +699,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     REQUIRE(!stats.pop_io_samples.empty());
     REQUIRE(!stats.queue_samples.empty());
 
-    const auto percentile = [](std::vector<u64> values, const f64 p) -> u64 {
+    const auto percentile = [](const std::span<const u64> values,
+                               const f64 p) -> u64 {
 #if RUN_CHECKS
         CHECK(!values.empty());
 #endif
@@ -722,8 +724,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     const f64 avg_queue_ns = float_cast<f64>(stats.queue_total_ns) /
                              float_cast<f64>(stats.queue_samples.size());
 
-    const f64 avg_memcpy_ns = float_cast<f64>(stats.memcpy_total_ns) /
-                              float_cast<f64>(stats.memcpy_samples.size());
+    const f64 avg_memcpy_ns = float_cast<f64>(memcpy_samples.total) /
+                              float_cast<f64>(memcpy_samples.count);
 
     const f64 avg_free_ns = float_cast<f64>(stats.free_total_ns) /
                             float_cast<f64>(stats.free_samples.size());
@@ -736,7 +738,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
     std::ostringstream report;
 
-    const auto reduce_as_micros = [](const std::vector<u64> &samples) -> auto {
+    const auto reduce_as_micros =
+        [](const std::span<const u64> samples) -> auto {
         return std::transform_reduce(samples.begin(), samples.end(), 0.0L,
                                      std::plus<>{},
                                      [](const auto ns) { return ns / 1.0e3L; });
@@ -744,7 +747,6 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
     std::sort(stats.falloc_samples.begin(), stats.falloc_samples.end());
     std::sort(stats.queue_samples.begin(), stats.queue_samples.end());
-    std::sort(stats.memcpy_samples.begin(), stats.memcpy_samples.end());
     std::sort(stats.free_samples.begin(), stats.free_samples.end());
     std::sort(stats.pop_io_samples.begin(), stats.pop_io_samples.end());
     std::sort(stats.push_io_samples.begin(), stats.push_io_samples.end());
@@ -752,7 +754,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     u64 enqueue_max_ns = 0;
     u64 enqueue_min_ns = UINT64_MAX;
     std::vector<u64> enqueue_samples;
-    enqueue_samples.reserve(LINES_PER_PRODUCER);
+    enqueue_samples.reserve(TOTAL_LINES);
     for (auto &samples : stats.producer_enqueue_samples) {
         enqueue_max_ns = std::max(enqueue_max_ns, std::ranges::max(samples));
         enqueue_min_ns = std::min(enqueue_min_ns, std::ranges::min(samples));
@@ -844,16 +846,16 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
            << "memcpy latency\n"
            << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.memcpy_samples) / 1.0e6L
+           << "sum\t\t\t" << reduce_as_micros(memcpy_samples.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_memcpy_ns << " ns\n"
-           << "min\t\t\t" << stats.memcpy_min_ns << " ns\n"
-           << "p50\t\t\t" << percentile(stats.memcpy_samples, 0.50) << " ns\n"
-           << "p90\t\t\t" << percentile(stats.memcpy_samples, 0.90) << " ns\n"
-           << "p99\t\t\t" << percentile(stats.memcpy_samples, 0.99) << " ns\n"
-           << "p99.9999\t\t"
-           << percentile(stats.memcpy_samples, 0.999999) / 1.0e3L << " µs\n"
-           << "max\t\t\t" << stats.memcpy_max_ns / 1.0e3L << " µs\n"
+           << "min\t\t\t" << memcpy_samples.min << " ns\n"
+           << "p50\t\t\t" << memcpy_samples.percentile<0.5>() << " ns\n"
+           << "p90\t\t\t" << memcpy_samples.percentile<0.9>() << " ns\n"
+           << "p99\t\t\t" << memcpy_samples.percentile<0.99>() << " ns\n"
+           << "p99.9999\t\t" << memcpy_samples.percentile<0.999999>() / 1.0e3L
+           << " µs\n"
+           << "max\t\t\t" << memcpy_samples.max / 1.0e3L << " µs\n"
            << "\n"
 
            << "free latency\n"
