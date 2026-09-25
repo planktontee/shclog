@@ -127,7 +127,8 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
         tail = (tail + 1) & buf_mask;
 
         if constexpr (IS_DEBUG) {
-            const usize r = count.fetch_sub(1, std::memory_order_release);
+            [[maybe_unused]] const usize r =
+                count.fetch_sub(1, std::memory_order_release);
             assert(r > 0);
         } else
             count.fetch_sub(1, std::memory_order_release);

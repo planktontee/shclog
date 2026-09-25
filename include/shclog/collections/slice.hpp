@@ -1,6 +1,8 @@
 #pragma once
 
 #include "shclog/cast.hpp"
+#include "shclog/const.hpp"
+#include "shclog/math.hpp"
 #include "shclog/types.hpp"
 #include <bit>
 #include <cassert>
@@ -11,6 +13,8 @@
 #include <utility>
 
 namespace shclog::collections::slice {
+
+using namespace shclog::math;
 
 // alignment is computed using max alignment of all fields
 // since we only have size and T, T is more likely to be it
@@ -69,9 +73,20 @@ struct alignas(Align) Slice {
     explicit Slice(const usize size) noexcept
         : data(ptr_cast<T>(this + 1)), len(size) {}
 
-    static void *operator new(const usize header, const usize payload,
-                              const std::nothrow_t &) noexcept {
-        // this can overflow, need to handle that and return null
+    [[nodiscard]] static void *operator new(const usize header,
+                                            const usize payload,
+                                            const std::nothrow_t &) noexcept {
+        // release this is UB, matching zig math
+        if constexpr (IS_DEBUG) {
+            [[maybe_unused]] auto [slice_byte_size, ovflw_slice_count] =
+                mul_with_overflow(payload, sizeof(T));
+            assert(!ovflw_slice_count);
+            [[maybe_unused]] auto [total_byte_size, ovflw_total_count] =
+                add_with_overflow(slice_byte_size, header);
+            assert(!ovflw_total_count);
+            return ::operator new(total_byte_size, std::align_val_t{Align},
+                                  std::nothrow);
+        }
         return ::operator new(header + payload * sizeof(T),
                               std::align_val_t{Align}, std::nothrow);
     }

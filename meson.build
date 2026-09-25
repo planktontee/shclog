@@ -58,6 +58,7 @@ test_inc = include_directories('test', 'include')
 test_src = [
   'test' / 'test_main.cpp',
   'test' / 'shclog' / 'test_mpsc_queue.cpp',
+  'test' / 'shclog' / 'bench' / 'test_time.cpp',
   'test' / 'shclog' / 'io' / 'test_mmap.cpp',
   'test' / 'shclog' / 'io' / 'test_cpu.cpp',
   'test' / 'shclog' / 'io' / 'test_iouring.cpp',

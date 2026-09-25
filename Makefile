@@ -10,14 +10,17 @@ build/tsan: Makefile
 	meson setup --reconfigure $@ -Doptimization=3 -Ddebug=true -Db_ndebug=false -Db_sanitize=thread
 
 build/release: Makefile
-	meson setup --reconfigure $@ -Dbuildtype=release -Db_ndebug=true -Db_sanitize=none
+	meson setup --reconfigure $@ -Dbuildtype=release -Ddebug=false -Db_ndebug=true -Db_sanitize=none
 
 $(BUILDS): %: build/%
 	meson test -C $< --verbose
 
-# TODO: tidy should run for release too
-tidy: build/debug
+TIDY_TARGETS := tidy_debug tidy_release
+
+$(TIDY_TARGETS): tidy_%: build/%
 	ninja -C $< clang-tidy
+
+tidy: $(TIDY_TARGETS)
 
 build: tidy $(BUILDS)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "shclog/cast.hpp"
+#include "shclog/math.hpp"
 #include "shclog/types.hpp"
 #include <algorithm>
 #include <cassert>
@@ -21,10 +22,11 @@ template <typename T>
     requires an_integer<T> || std::floating_point<T>
 struct Sample {
   public:
+    using TwithOverflow = shclog::math::Overflow<T>;
+
     T min = std::numeric_limits<T>::max();
     T max = std::numeric_limits<T>::lowest();
-    // TODO: handle overflow
-    T total{};
+    TwithOverflow total{0, false};
     std::unique_ptr<Slice<T>> samples;
     bool samples_sorted{false};
     usize count{0};
@@ -47,13 +49,16 @@ struct Sample {
     };
 
     [[nodiscard]] PushResult push(const T v) noexcept {
-        if (count >= samples->len)
+        if (count >= samples->len) [[unlikely]]
             return PushResult::BufferFull;
         samples_sorted = false;
         (*samples)[count++] = v;
         min = std::min(min, v);
         max = std::max(max, v);
-        total += v;
+
+        const auto t = add_with_overflow(total.value, v);
+        total.value = t.value;
+        total.overflow |= t.overflow;
         return PushResult::Success;
     }
 
@@ -70,13 +75,7 @@ struct Sample {
         EmptySamples,
     };
 
-    template <f64 p>
-        requires(p >= 0.0 && p <= 1.0)
-    T percentile() noexcept {
-        const auto r = percentile(p);
-        assert(r.has_value());
-        return *r;
-    }
+    // TODO: add avg
 
     std::expected<T, PercentileError> percentile(const f64 p) noexcept {
         if (p > 1.0 || p < 0.0) [[unlikely]]
@@ -94,6 +93,8 @@ struct Sample {
         const usize idx = int_cast<usize>(p * float_cast<f64>(count - 1));
         return (*samples)[idx];
     }
+
+    [[nodiscard]] bool empty() const { return count == 0; }
 
   private:
     explicit Sample(std::unique_ptr<Slice<T>> slice)
