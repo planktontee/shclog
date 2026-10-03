@@ -1,7 +1,6 @@
+#include "shclog/doctest.hpp"
 
 #include <array>
-#define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include <doctest/doctest.h>
 #include <sstream>
 #include <sys/mman.h>
 

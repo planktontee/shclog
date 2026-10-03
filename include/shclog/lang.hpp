@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstdlib>
 #include <expected>
 #include <print>
@@ -32,5 +33,4 @@ void unwrap(E e, const std::source_location loc =
         std::abort();
     }
 }
-
 } // namespace shclog::lang

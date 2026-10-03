@@ -37,7 +37,7 @@ SetCpuAffinityResult set_cpu_afinity(
     const std::optional<const pthread_t> target = std::nullopt) noexcept;
 
 template <std::ranges::input_range R>
-    requires std::same_as<std::ranges::range_value_t<R>, usize>
+    requires same_cv<std::ranges::range_value_t<R>, usize>
 SetCpuAffinityResult set_cpu_afinity(
     R &&range,
     const std::optional<const pthread_t> target = std::nullopt) noexcept {

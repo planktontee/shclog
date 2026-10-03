@@ -4,11 +4,15 @@
 #include "shclog/const.hpp"
 #include "shclog/math.hpp"
 #include "shclog/types.hpp"
+#include <algorithm>
 #include <bit>
 #include <cassert>
+#include <concepts>
+#include <cstddef>
 #include <expected>
 #include <memory>
 #include <new>
+#include <ranges>
 #include <type_traits>
 #include <utility>
 
@@ -22,9 +26,17 @@ using namespace shclog::math;
 template <typename T>
 inline constexpr usize slice_default_align = std::max(alignof(T), alignof(T *));
 
+template <typename A, typename B>
+concept comparable_elements = same_cv<A, B> || (byte_like<A> && byte_like<B>);
+
+struct NoSentinel {};
+inline constexpr NoSentinel NO_SENTINEL{};
+
 // This guy is literally just a fat ptr
 // you are responsible for the ownership
-template <typename T, usize Align = slice_default_align<T>>
+// Sentinel is not counted if available
+template <typename T, auto Sentinel = NO_SENTINEL,
+          usize Align = slice_default_align<T>>
 struct alignas(Align) Slice {
     static_assert(std::has_single_bit(Align));
     static_assert(Align >= slice_default_align<T>);
@@ -32,9 +44,23 @@ struct alignas(Align) Slice {
     static_assert(std::is_trivially_destructible_v<T>);
 
   public:
+    static constexpr bool HAS_SENTINEL =
+        !same_cv<decltype(Sentinel), NoSentinel>;
+    static_assert(!HAS_SENTINEL || same_cv<decltype(Sentinel), T>,
+                  "a sentinel has to be of type T, ex: Slice<u8, u8{0}>");
+
     T *data;
     // notice you can change this, but it's up to you to restore it
     usize len;
+
+    // notice there's no sense of ownership here
+    Slice(T *const d, const usize n) noexcept : data(d), len(n) {}
+    template <usize N> Slice(T (&arr)[N]) noexcept : data(arr), len(N) {
+        if constexpr (HAS_SENTINEL) {
+            assert(arr[N - 1] == Sentinel);
+            --len;
+        }
+    }
 
     enum class MakeError : u8 {
         OutOfMemory,
@@ -48,9 +74,12 @@ struct alignas(Align) Slice {
 
     [[nodiscard]] static std::expected<std::unique_ptr<Slice>, MakeError>
     make(const usize len) noexcept {
-        auto p = std::unique_ptr<Slice>(new (len, std::nothrow) Slice(len));
+        auto p = std::unique_ptr<Slice>(
+            new (len + (HAS_SENTINEL ? 1 : 0), std::nothrow) Slice(len));
         if (!p)
             return std::unexpected(MakeError::OutOfMemory);
+        if constexpr (HAS_SENTINEL)
+            p->data[len] = Sentinel;
         return p;
     }
 
@@ -58,6 +87,33 @@ struct alignas(Align) Slice {
                                             usize i) noexcept {
         assert(i < self.len);
         return std::forward_like<decltype(self)>(self.data[i]);
+    }
+
+    // Sentinel can't be guaranteed on slice of a Slice
+    [[nodiscard]] Slice<T, NO_SENTINEL, Align>
+    first(const usize n) const noexcept {
+        assert(n <= len);
+        return Slice<T, NO_SENTINEL, Align>(data, n);
+    }
+
+    template <std::ranges::contiguous_range R>
+        requires(!std::is_array_v<std::remove_cvref_t<R>> &&
+                 comparable_elements<T, std::ranges::range_value_t<R>>)
+    [[nodiscard]] friend bool operator==(const Slice &s, const R &r) noexcept {
+        using E = std::ranges::range_value_t<R>;
+        if constexpr (same_cv<T, E>)
+            return std::ranges::equal(s, r);
+        else
+            return std::ranges::equal(
+                s, r, {}, [](const T a) { return std::bit_cast<u8>(a); },
+                [](const E b) { return std::bit_cast<u8>(b); });
+    }
+
+    template <typename E, usize N>
+        requires comparable_elements<T, E>
+    [[nodiscard]] friend bool operator==(const Slice &s,
+                                         const E (&r)[N]) noexcept {
+        return s == collections::slice::Slice{r};
     }
 
     static void operator delete(void *const p) noexcept {
@@ -91,5 +147,14 @@ struct alignas(Align) Slice {
                               std::align_val_t{Align}, std::nothrow);
     }
 };
+
+// char arrays are string literals, \0 terminated, the rest are plain arrays
+template <typename C, usize N>
+    requires char_like<C>
+Slice(C (&)[N]) -> Slice<C, std::remove_cv_t<C>{}>;
+
+template <typename E, usize N>
+    requires(!char_like<E>)
+Slice(E (&)[N]) -> Slice<E>;
 
 } // namespace shclog::collections::slice

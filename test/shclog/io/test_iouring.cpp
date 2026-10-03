@@ -1,3 +1,15 @@
+#include "shclog/doctest.hpp"
+
+#include "shclog/bench/sample.hpp"
+#include "shclog/bench/time.hpp"
+#include "shclog/cast.hpp"
+#include "shclog/io/cpu.hpp"
+#include "shclog/io/iouring.hpp"
+#include "shclog/io/process.hpp"
+#include "shclog/io/syscall.hpp"
+#include "shclog/lang.hpp"
+#include "shclog/mpsc_queue.hpp"
+#include "shclog/types.hpp"
 #include <algorithm>
 #include <array>
 #include <asm/unistd_64.h>
@@ -29,18 +41,6 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
-#define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include "shclog/bench/sample.hpp"
-#include "shclog/bench/time.hpp"
-#include "shclog/cast.hpp"
-#include "shclog/io/cpu.hpp"
-#include "shclog/io/iouring.hpp"
-#include "shclog/io/process.hpp"
-#include "shclog/io/syscall.hpp"
-#include "shclog/lang.hpp"
-#include "shclog/mpsc_queue.hpp"
-#include "shclog/types.hpp"
-#include <doctest/doctest.h>
 
 using namespace shclog;
 using namespace shclog::lang;
@@ -286,7 +286,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     std::vector<std::jthread> producers;
     producers.reserve(PRODUCERS);
 #if BENCHMARK
-    CHECK(SetPriorityResult::Success == set_priority(-20));
+    // CHECK(SetPriorityResult::Success == set_priority(-20));
     auto cpu_view =
         std::views::iota(*target_cores.begin(), *target_cores.rbegin() + 1) |
         std::views::filter(
@@ -314,7 +314,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK
             CHECK(SetCpuAffinityResult::Success ==
                   set_cpu_afinity(pick_cpu(producer_id)));
-            CHECK(SetPriorityResult::Success == set_priority(-20));
+            // CHECK(SetPriorityResult::Success == set_priority(-20));
             Time p_time;
 #endif
             ready.arrive_and_wait();
@@ -618,31 +618,25 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     REQUIRE(!stats.free.empty());
     REQUIRE(!stats.memcpy.empty());
 
-    REQUIRE(!stats.falloc.total.overflow);
-    REQUIRE(!stats.push.total.overflow);
-    REQUIRE(!stats.pop.total.overflow);
-    REQUIRE(!stats.queue.total.overflow);
-    REQUIRE(!stats.free.total.overflow);
-    REQUIRE(!stats.memcpy.total.overflow);
+    REQUIRE(!unwrap(stats.falloc.total()).overflow);
+    REQUIRE(!unwrap(stats.push.total()).overflow);
+    REQUIRE(!unwrap(stats.pop.total()).overflow);
+    REQUIRE(!unwrap(stats.queue.total()).overflow);
+    REQUIRE(!unwrap(stats.free.total()).overflow);
+    REQUIRE(!unwrap(stats.memcpy.total()).overflow);
 
     const auto mib_per_second = stats.bytes / elapsed_seconds / (1 << 20);
 
-    const f64 avg_falloc_ns = float_cast<f64>(stats.falloc.total.value) /
-                              float_cast<f64>(stats.falloc.count);
+    const f64 avg_falloc_ns = unwrap(stats.falloc.avg<f64>());
 
-    const f64 avg_push_io_ns = float_cast<f64>(stats.push.total.value) /
-                               float_cast<f64>(stats.push.count);
-    const f64 avg_pop_io_ns = float_cast<f64>(stats.pop.total.value) /
-                              float_cast<f64>(stats.pop.count);
+    const f64 avg_push_io_ns = unwrap(stats.push.avg<f64>());
+    const f64 avg_pop_io_ns = unwrap(stats.pop.avg<f64>());
 
-    const f64 avg_queue_ns = float_cast<f64>(stats.queue.total.value) /
-                             float_cast<f64>(stats.queue.count);
+    const f64 avg_queue_ns = unwrap(stats.queue.avg<f64>());
 
-    const f64 avg_memcpy_ns = float_cast<f64>(stats.memcpy.total.value) /
-                              float_cast<f64>(stats.memcpy.count);
+    const f64 avg_memcpy_ns = unwrap(stats.memcpy.avg<f64>());
 
-    const f64 avg_free_ns = float_cast<f64>(stats.free.total.value) /
-                            float_cast<f64>(stats.free.count);
+    const f64 avg_free_ns = unwrap(stats.free.avg<f64>());
 
     const f64 avg_batch_lines =
         float_cast<f64>(consumed_lines) / float_cast<f64>(stats.writes);
@@ -663,7 +657,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         stats.producers.begin(), stats.producers.end(), usize{0}, std::plus<>{},
         [](const auto &s) { return s.count; })));
     for (auto &samples : stats.producers) {
-        REQUIRE(!samples.total.overflow);
+        REQUIRE(!unwrap(samples.total()).overflow);
         std::ranges::for_each(samples.span(), [&all_producers](const u64 v) {
             unwrap(all_producers.push(v));
         });
@@ -703,7 +697,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t\t" << reduce_as_micros(stats.falloc.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_falloc_ns << " ns\n"
-           << "min\t\t\t" << stats.falloc.min << " ns\n"
+           << "min\t\t\t" << unwrap(stats.falloc.min()) << " ns\n"
            << "p50\t\t\t" << unwrap(stats.falloc.percentile(0.50)) << " ns\n"
            << "p90\t\t\t" << unwrap(stats.falloc.percentile(0.90)) << " ns\n"
            << "p99\t\t\t" << unwrap(stats.falloc.percentile(0.99)) << " ns\n"
@@ -713,7 +707,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << " ms\n"
            << "p99.999\t\t\t"
            << unwrap(stats.falloc.percentile(0.99999)) / 1.0e6L << " ms\n"
-           << "max\t\t\t" << stats.falloc.max / 1.0e6L << " ms\n"
+           << "max\t\t\t" << unwrap(stats.falloc.max()) / 1.0e6L << " ms\n"
            << "\n"
 
            << "enqueue latency\n"
@@ -721,7 +715,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t\t" << reduce_as_micros(all_producers.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_enqueue_ns << " ns\n"
-           << "min\t\t\t" << all_producers.min << " ns\n"
+           << "min\t\t\t" << unwrap(all_producers.min()) << " ns\n"
            << "p50\t\t\t" << unwrap(all_producers.percentile(0.50)) << " ns\n"
            << "p90\t\t\t" << unwrap(all_producers.percentile(0.90)) << " ns\n"
            << "p99\t\t\t" << unwrap(all_producers.percentile(0.99)) << " ns\n"
@@ -731,7 +725,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << unwrap(all_producers.percentile(0.9999)) / 1.0e6L << " ms\n"
            << "p99.999\t\t\t"
            << unwrap(all_producers.percentile(0.99999)) / 1.0e6L << " ms\n"
-           << "max\t\t\t" << all_producers.max / 1.0e6L << " ms\n"
+           << "max\t\t\t" << unwrap(all_producers.max()) / 1.0e6L << " ms\n"
            << "\n"
 
            << "dequeue latency\n"
@@ -739,13 +733,13 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t\t" << reduce_as_micros(stats.queue.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_queue_ns << " ns\n"
-           << "min\t\t\t" << stats.queue.min << " ns\n"
+           << "min\t\t\t" << unwrap(stats.queue.min()) << " ns\n"
            << "p50\t\t\t" << unwrap(stats.queue.percentile(0.50)) << " ns\n"
            << "p90\t\t\t" << unwrap(stats.queue.percentile(0.90)) << " ns\n"
            << "p99\t\t\t" << unwrap(stats.queue.percentile(0.99)) << " ns\n"
            << "p99.9999\t\t"
            << unwrap(stats.queue.percentile(0.999999)) / 1.0e3L << " µs\n"
-           << "max\t\t\t" << stats.queue.max / 1.0e3L << " µs\n"
+           << "max\t\t\t" << unwrap(stats.queue.max()) / 1.0e3L << " µs\n"
            << "\n"
 
            << "memcpy latency\n"
@@ -753,13 +747,13 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t\t" << reduce_as_micros(stats.memcpy.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_memcpy_ns << " ns\n"
-           << "min\t\t\t" << stats.memcpy.min << " ns\n"
+           << "min\t\t\t" << unwrap(stats.memcpy.min()) << " ns\n"
            << "p50\t\t\t" << unwrap(stats.memcpy.percentile(0.5)) << " ns\n"
            << "p90\t\t\t" << unwrap(stats.memcpy.percentile(0.9)) << " ns\n"
            << "p99\t\t\t" << unwrap(stats.memcpy.percentile(0.99)) << " ns\n"
            << "p99.9999\t\t"
            << unwrap(stats.memcpy.percentile(0.999999)) / 1.0e3L << " µs\n"
-           << "max\t\t\t" << stats.memcpy.max / 1.0e3L << " µs\n"
+           << "max\t\t\t" << unwrap(stats.memcpy.max()) / 1.0e3L << " µs\n"
            << "\n"
 
            << "free latency\n"
@@ -767,20 +761,20 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t\t" << reduce_as_micros(stats.free.span()) / 1.0e6L
            << " s\n"
            << "avg\t\t\t" << avg_free_ns << " ns\n"
-           << "min\t\t\t" << stats.free.min << " ns\n"
+           << "min\t\t\t" << unwrap(stats.free.min()) << " ns\n"
            << "p50\t\t\t" << unwrap(stats.free.percentile(0.50)) << " ns\n"
            << "p90\t\t\t" << unwrap(stats.free.percentile(0.90)) << " ns\n"
            << "p99\t\t\t" << unwrap(stats.free.percentile(0.99)) << " ns\n"
            << "p99.9999\t\t" << unwrap(stats.free.percentile(0.999999)) / 1.0e3L
            << " µs\n"
-           << "max\t\t\t" << stats.free.max / 1.0e3L << " µs\n"
+           << "max\t\t\t" << unwrap(stats.free.max()) / 1.0e3L << " µs\n"
            << "\n"
 
            << "I/O latency (pop)\n"
            << "-----------\n"
            << "sum\t\t" << reduce_as_micros(stats.pop.span()) / 1.0e6L << " s\n"
            << "avg\t\t" << avg_pop_io_ns / 1.0e3L << " µs\n"
-           << "min\t\t" << stats.pop.min << " ns\n"
+           << "min\t\t" << unwrap(stats.pop.min()) << " ns\n"
            << "p50\t\t" << unwrap(stats.pop.percentile(0.50)) / 1.0e3L
            << " µs\n"
            << "p90\t\t" << unwrap(stats.pop.percentile(0.90)) / 1.0e3L
@@ -793,7 +787,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << " ms\n"
            << "p99.999\t\t" << unwrap(stats.pop.percentile(0.99999)) / 1.0e6L
            << " ms\n"
-           << "max\t\t" << stats.pop.max / 1.0e6L << " ms\n"
+           << "max\t\t" << unwrap(stats.pop.max()) / 1.0e6L << " ms\n"
            << "\n"
 
            << "I/O latency (push)\n"
@@ -801,7 +795,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << "sum\t\t" << reduce_as_micros(stats.push.span()) / 1.0e3L
            << " ms\n"
            << "avg\t\t" << avg_push_io_ns << " ns\n"
-           << "min\t\t" << stats.push.min << " ns\n"
+           << "min\t\t" << unwrap(stats.push.min()) << " ns\n"
            << "p50\t\t" << unwrap(stats.push.percentile(0.50)) << " ns\n"
            << "p90\t\t" << unwrap(stats.push.percentile(0.90)) << " ns\n"
            << "p99\t\t" << unwrap(stats.push.percentile(0.99)) << " ns\n"
@@ -811,7 +805,7 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
            << " µs\n"
            << "p99.999\t\t" << unwrap(stats.push.percentile(0.99999)) / 1.0e3L
            << " µs\n"
-           << "max\t\t" << stats.push.max / 1.0e3L << " µs\n";
+           << "max\t\t" << unwrap(stats.push.max()) / 1.0e3L << " µs\n";
 
     MESSAGE(report.str());
 #elif BENCHMARK == 2

@@ -1,8 +1,8 @@
-#define DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
-#include <doctest/doctest.h>
+#include "shclog/doctest.hpp"
 
 #include "shclog/bench/sample.hpp"
 #include "shclog/bench/time.hpp"
+#include "shclog/lang.hpp"
 #include "shclog/cast.hpp"
 #include "shclog/types.hpp"
 #include <array>
@@ -10,10 +10,9 @@
 #include <utility>
 
 using namespace shclog;
+using namespace shclog::lang;
 using namespace shclog::bench::sample;
 using namespace shclog::bench::time;
-
-namespace {
 
 using Nano = std::chrono::nanoseconds;
 using Micro = std::chrono::microseconds;
@@ -70,8 +69,6 @@ static_assert(Cast<f64, Milli>{}(Nano{1'500'000}) == 1.5);
 static_assert(Cast<f64, Sec>{}(Nano{250'000'000}) == 0.25);
 static_assert(Cast<u64, Micro>{}(Nano{1500}) == 1);
 
-} // namespace
-
 TEST_CASE("Time::sample records the elapsed delta in nanoseconds") {
     MockClock::reset();
     auto samples = make_sample<u64>(4);
@@ -83,10 +80,10 @@ TEST_CASE("Time::sample records the elapsed delta in nanoseconds") {
 
     REQUIRE(samples.count == 1);
     CHECK(samples.span()[0] == 1500);
-    CHECK(samples.min == 1500);
-    CHECK(samples.max == 1500);
-    CHECK(samples.total.value == 1500);
-    CHECK(!samples.total.overflow);
+    CHECK(unwrap(samples.min()) == 1500);
+    CHECK(unwrap(samples.max()) == 1500);
+    CHECK(unwrap(samples.total()).value == 1500);
+    CHECK(!unwrap(samples.total()).overflow);
 }
 
 TEST_CASE("Time::sample converts to microseconds, truncating toward zero") {
@@ -153,9 +150,9 @@ TEST_CASE("Time::sample yields zero for a delta below the target unit") {
     REQUIRE(samples.count == 2);
     CHECK(samples.span()[0] == 0);
     CHECK(samples.span()[1] == 0);
-    CHECK(samples.min == 0);
-    CHECK(samples.max == 0);
-    CHECK(samples.total.value == 0);
+    CHECK(unwrap(samples.min()) == 0);
+    CHECK(unwrap(samples.max()) == 0);
+    CHECK(unwrap(samples.total()).value == 0);
 }
 
 TEST_CASE("Sample aggregates in the target unit") {
@@ -173,10 +170,10 @@ TEST_CASE("Sample aggregates in the target unit") {
     }
 
     CHECK(samples.count == 4);
-    CHECK(samples.min == 1);
-    CHECK(samples.max == 4);
-    CHECK(samples.total.value == 10);
-    CHECK(!samples.total.overflow);
+    CHECK(unwrap(samples.min()) == 1);
+    CHECK(unwrap(samples.max()) == 4);
+    CHECK(unwrap(samples.total()).value == 10);
+    CHECK(!unwrap(samples.total()).overflow);
 
     const auto p50 = samples.percentile(0.50);
     REQUIRE(p50.has_value());
@@ -281,5 +278,5 @@ TEST_CASE("Time::sample reports a full sample buffer") {
 
     REQUIRE(samples.count == 1);
     CHECK(samples.span()[0] == 10);
-    CHECK(samples.max == 10);
+    CHECK(unwrap(samples.max()) == 10);
 }

@@ -3,6 +3,7 @@ project(
   'cpp',
   default_options: [
     'cpp_std=c++26',
+    'warning_level=3',
     'werror=true',
   ],
 )
@@ -24,9 +25,6 @@ add_project_arguments(
     # overflow
     '-Wshift-overflow=2',
   ),
-  '-Wall',
-  '-Wextra',
-  '-Wpedantic',
   '-fno-exceptions',
   '-march=native',
   language: 'cpp',
@@ -57,7 +55,12 @@ shclog_objs = shclog_lib.extract_all_objects(recursive: true)
 test_inc = include_directories('test', 'include')
 test_src = [
   'test' / 'test_main.cpp',
+  'test' / 'shclog' / 'collections' / 'test_slice.cpp',
+  'test' / 'shclog' / 'test_cast.cpp',
+  'test' / 'shclog' / 'test_fmt.cpp',
   'test' / 'shclog' / 'test_mpsc_queue.cpp',
+  'test' / 'shclog' / 'bench' / 'test_report.cpp',
+  'test' / 'shclog' / 'bench' / 'test_sample.cpp',
   'test' / 'shclog' / 'bench' / 'test_time.cpp',
   'test' / 'shclog' / 'io' / 'test_mmap.cpp',
   'test' / 'shclog' / 'io' / 'test_cpu.cpp',
@@ -70,6 +73,8 @@ test_exe = executable(
   objects: shclog_objs,
   include_directories: test_inc,
   dependencies: [doctest_dep],
+  # every test TU has to agree on doctest's config
+  cpp_args: ['-DDOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS'],
 )
 
 test(

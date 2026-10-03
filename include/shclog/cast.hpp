@@ -14,9 +14,9 @@ namespace shclog {
 template <typename T>
 concept an_integer =
     // in_range doesnt work for char conversions in C++ because yes
-    std::integral<T> && !std::same_as<T, bool> && !std::same_as<T, char> &&
-    !std::same_as<T, wchar_t> && !std::same_as<T, char8_t> &&
-    !std::same_as<T, char16_t> && !std::same_as<T, char32_t>;
+    std::integral<T> && !same_cv<T, bool> && !same_cv<T, char> &&
+    !same_cv<T, wchar_t> && !same_cv<T, char8_t> && !same_cv<T, char16_t> &&
+    !same_cv<T, char32_t>;
 
 // Deferred placeholder, never actually used
 struct deferred_t {};
@@ -29,7 +29,8 @@ template <an_integer From> struct [[nodiscard]] int_cast_proxy {
     // int<->int in range (does not truncate)
     // important to notice that the template for To is evaluated on call
     template <an_integer To> constexpr operator To() const noexcept {
-        assert(std::in_range<To>(v));
+        // in_range only takes cv-unqualified integers
+        assert(std::in_range<std::remove_cv_t<To>>(v));
         return static_cast<To>(v);
     }
 };
@@ -41,14 +42,14 @@ template <typename To = deferred_t, an_integer From>
     // we return int_cast_proxy, which is later translated to <To> To()
     // to be able to cast to the target type, example:
     // u8 x = int_cast(10)
-    if constexpr (std::same_as<To, deferred_t>)
+    if constexpr (same_cv<To, deferred_t>)
         return int_cast_proxy<From>{v};
     // no-op
-    else if constexpr (std::same_as<To, From>)
+    else if constexpr (same_cv<To, From>)
         return v;
     // <To> is not deferred, example int_cast<u8>(10)
     else {
-        assert(std::in_range<To>(v));
+        assert(std::in_range<std::remove_cv_t<To>>(v));
         return static_cast<To>(v);
     }
 }
@@ -93,14 +94,19 @@ template <std::floating_point To, an_integer From>
 
 template <std::floating_point To, std::floating_point From>
 [[nodiscard]] constexpr To float_cast(const From v) noexcept {
-    // Narrowing range check, otherwise promotion just works
-    if constexpr (std::numeric_limits<To>::max_exponent <
-                  std::numeric_limits<From>::max_exponent) {
-        [[maybe_unused]] constexpr auto max =
-            static_cast<From>(std::numeric_limits<To>::max());
-        assert(!std::isfinite(v) || (v >= -max && v <= max));
+    // no-op
+    if constexpr (same_cv<To, From>)
+        return v;
+    else {
+        // Narrowing range check, otherwise promotion just works
+        if constexpr (std::numeric_limits<To>::max_exponent <
+                      std::numeric_limits<From>::max_exponent) {
+            [[maybe_unused]] constexpr auto max =
+                static_cast<From>(std::numeric_limits<To>::max());
+            assert(!std::isfinite(v) || (v >= -max && v <= max));
+        }
+        return static_cast<To>(v);
     }
-    return static_cast<To>(v);
 }
 
 // alignment is implicit in T
