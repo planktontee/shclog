@@ -37,7 +37,8 @@ template <typename T, typename Deleter = std::default_delete<T>>
 struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
   private:
     static constexpr std::align_val_t buf_align{
-        std::hardware_destructive_interference_size};
+        std::hardware_destructive_interference_size
+    };
 
     struct AlignedBufferDeleter {
         void operator()(std::atomic<T *> *p) const noexcept {
@@ -49,9 +50,11 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
     using Buffer = std::unique_ptr<std::atomic<T *>[], AlignedBufferDeleter>;
 
     alignas(
-        std::hardware_destructive_interference_size) std::atomic<usize> count{};
+        std::hardware_destructive_interference_size
+    ) std::atomic<usize> count{};
     alignas(
-        std::hardware_destructive_interference_size) std::atomic<usize> head{};
+        std::hardware_destructive_interference_size
+    ) std::atomic<usize> head{};
     alignas(std::hardware_destructive_interference_size) Buffer buffer;
     alignas(std::hardware_destructive_interference_size) usize tail{};
     // padding
@@ -59,7 +62,9 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
     const usize max;
 
     MPSCQueue(const usize capacity, Buffer &&buf_ptr) noexcept
-        : buffer(std::move(buf_ptr)), buf_mask(capacity - 1), max(capacity) {}
+        : buffer(std::move(buf_ptr))
+        , buf_mask(capacity - 1)
+        , max(capacity) {}
 
   public:
     static std::expected<std::unique_ptr<MPSCQueue<T, Deleter>>, CreateError>
@@ -73,7 +78,8 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
             return std::unexpected<CreateError>(CreateError::AllocationFailed);
 
         auto queue = std::unique_ptr<MPSCQueue<T, Deleter>>(
-            new (std::nothrow) MPSCQueue<T, Deleter>(capacity, std::move(buf)));
+            new (std::nothrow) MPSCQueue<T, Deleter>(capacity, std::move(buf))
+        );
         if (!queue) [[unlikely]]
             return std::unexpected<CreateError>(CreateError::AllocationFailed);
 
@@ -109,7 +115,9 @@ struct alignas(std::hardware_destructive_interference_size) MPSCQueue {
 
         if constexpr (IS_DEBUG) {
             const auto rv = buffer[h & buf_mask].exchange(
-                v.release(), std::memory_order_release);
+                v.release(),
+                std::memory_order_release
+            );
             assert(!rv);
         } else
             buffer[h & buf_mask].store(v.release(), std::memory_order_release);
@@ -225,8 +233,10 @@ concept HasNodeMember =
     std::is_same_v<decltype(std::declval<T &>().node), Node>;
 
 template <typename T> inline T *container_of(Node *n) noexcept {
-    static_assert(std::is_standard_layout_v<T>,
-                  "Memory layout has to be C compatible");
+    static_assert(
+        std::is_standard_layout_v<T>,
+        "Memory layout has to be C compatible"
+    );
     static_assert(HasNodeMember<T>, "T must have a member Node node;");
     auto offset = offsetof(T, node);
     return ptr_cast<T>(ptr_cast<u8>(n) - offset);

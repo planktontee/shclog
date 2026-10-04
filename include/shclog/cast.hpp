@@ -99,8 +99,10 @@ template <std::floating_point To, std::floating_point From>
         return v;
     else {
         // Narrowing range check, otherwise promotion just works
-        if constexpr (std::numeric_limits<To>::max_exponent <
-                      std::numeric_limits<From>::max_exponent) {
+        if constexpr (
+            std::numeric_limits<To>::max_exponent <
+            std::numeric_limits<From>::max_exponent
+        ) {
             [[maybe_unused]] constexpr auto max =
                 static_cast<From>(std::numeric_limits<To>::max());
             assert(!std::isfinite(v) || (v >= -max && v <= max));

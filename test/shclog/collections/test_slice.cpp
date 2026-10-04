@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -21,17 +22,40 @@ static_assert(char_like<const char8_t> && !char_like<const u8>);
 static_assert(!Slice<u8>::HAS_SENTINEL);
 static_assert(Slice<u8, u8{0}>::HAS_SENTINEL);
 // a slice of a sentinel slice ends wherever it ends, not at the sentinel
-static_assert(
-    std::same_as<decltype(std::declval<const Slice<u8, u8{0}> &>().first(1)),
-                 Slice<u8>>);
+static_assert(std::same_as<
+              decltype(std::declval<const Slice<u8, u8{0}> &>().first(1)),
+              Slice<u8>>);
 
 TEST_CASE("Slice views a char array up to its \\0 sentinel") {
     const Slice s{u8"µs"};
     static_assert(
-        std::same_as<decltype(s), const Slice<const char8_t, u8'\0'>>);
+        std::same_as<decltype(s), const Slice<const char8_t, u8'\0'>>
+    );
     // µ takes 2 bytes
     CHECK(s.len == 3);
     CHECK(s.data[s.len] == u8'\0');
+}
+
+TEST_CASE("Slice views a mutable char array as a plain buffer") {
+    char buf[]{'a', 'b', 'c', 'd'};
+    const Slice s{buf};
+    static_assert(std::same_as<decltype(s), const Slice<char>>);
+    CHECK(s.data == buf);
+    CHECK(s.len == 4);
+
+    char8_t text[] = u8"ab";
+    static_assert(std::same_as<decltype(Slice{text}), Slice<char8_t>>);
+    CHECK(Slice{text}.len == 3);
+}
+
+TEST_CASE("Slice == keeps a mutable char array's last byte") {
+    char buf[]{'a', 'b', 'c', 'd'};
+    char text[] = "ab";
+    CHECK(Slice{"abcd"} == buf);
+    const bool reversed = buf == Slice{"abcd"};
+    CHECK(reversed);
+    CHECK(Slice{"ab"} != text);
+    CHECK(Slice{"ab"} == Slice{text}.first(2));
 }
 
 TEST_CASE("Slice views every element of any other array") {
@@ -94,8 +118,14 @@ TEST_CASE("Slice == compares byte-like elements as bytes") {
     CHECK(s == std::string("µs"));
     CHECK(s == std::u8string(u8"µs"));
     CHECK(s == std::vector<u8>{0xC2, 0xB5, 's'});
-    CHECK(s == std::array<std::byte, 3>{std::byte{0xC2}, std::byte{0xB5},
-                                        std::byte{'s'}});
+    CHECK(
+        s ==
+        std::array<std::byte, 3>{
+            std::byte{0xC2},
+            std::byte{0xB5},
+            std::byte{'s'}
+        }
+    );
     CHECK(s != std::vector<u8>{0xC2, 0xB5});
 }
 
@@ -111,4 +141,33 @@ TEST_CASE("Slice == compares non-byte elements by value") {
     const Slice s{elems};
     CHECK(s == std::vector<u32>{1, 2, 3});
     CHECK(s != std::vector<u32>{1, 2, 4});
+}
+
+template <typename S>
+concept has_string_view = requires(const S &s) { s.as_string_view(); };
+
+static_assert(has_string_view<Slice<u8>>);
+static_assert(has_string_view<Slice<const char8_t>>);
+static_assert(!has_string_view<Slice<u32>>);
+
+TEST_CASE("Slice::as_string_view views the same bytes") {
+    auto s = unwrap(Slice<u8>::make(2));
+    (*s)[0] = 'o';
+    (*s)[1] = 'k';
+    const std::string_view v = s->as_string_view();
+    CHECK(v == "ok");
+    CHECK(
+        static_cast<const void *>(v.data()) ==
+        static_cast<const void *>(s->data)
+    );
+}
+
+TEST_CASE("Slice::as_string_view leaves the sentinel out and follows first") {
+    const Slice s{u8"µs"};
+    CHECK(s.as_string_view() == "µs");
+    CHECK(s.as_string_view().size() == 3);
+    CHECK(s.first(2).as_string_view() == "µ");
+
+    std::byte bytes[] = {std::byte{'h'}, std::byte{'i'}};
+    CHECK(Slice{bytes}.as_string_view() == "hi");
 }

@@ -2,8 +2,8 @@
 
 #include "shclog/bench/sample.hpp"
 #include "shclog/bench/time.hpp"
-#include "shclog/lang.hpp"
 #include "shclog/cast.hpp"
+#include "shclog/lang.hpp"
 #include "shclog/types.hpp"
 #include <array>
 #include <chrono>
@@ -93,18 +93,21 @@ TEST_CASE("Time::sample converts to microseconds, truncating toward zero") {
 
     timer.start();
     MockClock::advance(Nano{1500});
-    CHECK(timer.sample<u64, Micro>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Micro>(samples) == Sample<u64>::PushResult::Success
+    );
 
     timer.start();
     MockClock::advance(Nano{2999});
-    CHECK(timer.sample<u64, Micro>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Micro>(samples) == Sample<u64>::PushResult::Success
+    );
 
     timer.start();
     MockClock::advance(Nano{3000});
-    CHECK(timer.sample<u64, Micro>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Micro>(samples) == Sample<u64>::PushResult::Success
+    );
 
     REQUIRE(samples.count == 3);
     CHECK(samples.span()[0] == 1);
@@ -119,13 +122,15 @@ TEST_CASE("Time::sample converts to milliseconds") {
 
     timer.start();
     MockClock::advance(Nano{1'500'000});
-    CHECK(timer.sample<u64, Milli>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Milli>(samples) == Sample<u64>::PushResult::Success
+    );
 
     timer.start();
     MockClock::advance(Milli{4});
-    CHECK(timer.sample<u64, Milli>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Milli>(samples) == Sample<u64>::PushResult::Success
+    );
 
     REQUIRE(samples.count == 2);
     CHECK(samples.span()[0] == 1);
@@ -139,13 +144,15 @@ TEST_CASE("Time::sample yields zero for a delta below the target unit") {
 
     timer.start();
     MockClock::advance(Nano{999});
-    CHECK(timer.sample<u64, Micro>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Micro>(samples) == Sample<u64>::PushResult::Success
+    );
 
     timer.start();
     MockClock::advance(Nano{0});
-    CHECK(timer.sample<u64, Micro>(samples) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64, Micro>(samples) == Sample<u64>::PushResult::Success
+    );
 
     REQUIRE(samples.count == 2);
     CHECK(samples.span()[0] == 0);
@@ -160,13 +167,15 @@ TEST_CASE("Sample aggregates in the target unit") {
     auto samples = make_sample<u64>(4);
     Timer timer{};
 
-    const std::array<Nano, 4> deltas{Nano{4000}, Nano{1000}, Nano{3000},
-                                     Nano{2000}};
+    const std::array<Nano, 4>
+        deltas{Nano{4000}, Nano{1000}, Nano{3000}, Nano{2000}};
     for (const auto delta : deltas) {
         timer.start();
         MockClock::advance(delta);
-        CHECK(timer.sample<u64, Micro>(samples) ==
-              Sample<u64>::PushResult::Success);
+        CHECK(
+            timer.sample<u64, Micro>(samples) ==
+            Sample<u64>::PushResult::Success
+        );
     }
 
     CHECK(samples.count == 4);
@@ -195,8 +204,10 @@ TEST_CASE("Time::sample accepts a caller-supplied transform") {
 
     timer.start();
     MockClock::advance(Nano{21});
-    CHECK(timer.sample<u64>(samples, DoubleTransform{}) ==
-          Sample<u64>::PushResult::Success);
+    CHECK(
+        timer.sample<u64>(samples, DoubleTransform{}) ==
+        Sample<u64>::PushResult::Success
+    );
 
     REQUIRE(samples.count == 1);
     CHECK(samples.span()[0] == 42);

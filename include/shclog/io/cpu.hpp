@@ -29,18 +29,20 @@ enum SetCpuAffinityResult : u8 {
     Unexpected,
 };
 
-SetCpuAffinityResult _set_cpu_affinity(const cpu_set_t &set,
-                                       const pthread_t thread_target) noexcept;
+SetCpuAffinityResult
+_set_cpu_affinity(const cpu_set_t &set, const pthread_t thread_target) noexcept;
 
 SetCpuAffinityResult set_cpu_afinity(
     const usize cpu,
-    const std::optional<const pthread_t> target = std::nullopt) noexcept;
+    const std::optional<const pthread_t> target = std::nullopt
+) noexcept;
 
 template <std::ranges::input_range R>
     requires same_cv<std::ranges::range_value_t<R>, usize>
 SetCpuAffinityResult set_cpu_afinity(
     R &&range,
-    const std::optional<const pthread_t> target = std::nullopt) noexcept {
+    const std::optional<const pthread_t> target = std::nullopt
+) noexcept {
 
     cpu_set_t set;
     CPU_ZERO(&set);
@@ -79,8 +81,10 @@ list_cpu_cores() noexcept {
         path{};
     std::memcpy(path.begin(), stub.begin(), stub.size() - 1);
 
-    std::span<u8, cpu_idx_buf_size> cpu_idx_buf{&path.at(stub.size() - 1),
-                                                cpu_idx_buf_size};
+    std::span<u8, cpu_idx_buf_size> cpu_idx_buf{
+        &path.at(stub.size() - 1),
+        cpu_idx_buf_size
+    };
 
     open_how how{
         .flags = O_RDONLY | O_CLOEXEC,
@@ -95,13 +99,17 @@ list_cpu_cores() noexcept {
         const auto [path_cpu_idx_end, fmt_err] = std::to_chars(
             reinterpret_cast<char *>(cpu_idx_buf.data()),
             reinterpret_cast<char *>(cpu_idx_buf.data() + cpu_idx_buf.size()),
-            i);
+            i
+        );
 
         if (fmt_err != std::errc()) {
             if constexpr (IS_DEBUG) {
-                std::println(stderr, "Panic in {}: {}",
-                             std::source_location::current().function_name(),
-                             std::make_error_code(fmt_err).message());
+                std::println(
+                    stderr,
+                    "Panic in {}: {}",
+                    std::source_location::current().function_name(),
+                    std::make_error_code(fmt_err).message()
+                );
                 std::abort();
             }
             std::unreachable();
@@ -123,8 +131,9 @@ list_cpu_cores() noexcept {
 
         CPUCore core{};
         while (content_it != content_end) {
-            auto comma_p = static_cast<const u8 *>(std::memchr(
-                content_it, ',', int_cast(content_end - content_it)));
+            auto comma_p = static_cast<const u8 *>(
+                std::memchr(content_it, ',', int_cast(content_end - content_it))
+            );
 
             if (!comma_p)
                 comma_p = content_end;
@@ -132,7 +141,9 @@ list_cpu_cores() noexcept {
             usize cpu_idx{};
             const auto parse_idx_r = std::from_chars(
                 reinterpret_cast<const char *>(content_it),
-                reinterpret_cast<const char *>(comma_p), cpu_idx);
+                reinterpret_cast<const char *>(comma_p),
+                cpu_idx
+            );
             const u8 *const parse_idx_end =
                 reinterpret_cast<const u8 *>(parse_idx_r.ptr);
             if (parse_idx_end == content_it)
@@ -147,7 +158,9 @@ list_cpu_cores() noexcept {
                 usize cpu_idx_end{};
                 const auto parse_idx_end_r = std::from_chars(
                     reinterpret_cast<const char *>(content_it),
-                    reinterpret_cast<const char *>(comma_p), cpu_idx_end);
+                    reinterpret_cast<const char *>(comma_p),
+                    cpu_idx_end
+                );
                 const u8 *parse_idx_end_end =
                     reinterpret_cast<const u8 *>(parse_idx_end_r.ptr);
                 if (parse_idx_end_end == content_it)

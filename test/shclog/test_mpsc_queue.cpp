@@ -99,10 +99,12 @@ TEST_CASE("MPSCQueue concurrent test") {
         producers.emplace_back([&queue, p]() {
 #endif
             auto items = std::unique_ptr<std::unique_ptr<i32>[]>(
-                new (std::nothrow) std::unique_ptr<i32>[target_items]);
+                new (std::nothrow) std::unique_ptr<i32>[target_items]
+            );
             for (usize i = 0; i < target_items; ++i) {
                 items[i] = std::make_unique<i32>(
-                    int_cast<i32>(p * target_items + i + 1));
+                    int_cast<i32>(p * target_items + i + 1)
+                );
             }
 
             for (usize i = 0; i < target_items; ++i) {
@@ -129,8 +131,9 @@ TEST_CASE("MPSCQueue concurrent test") {
             while (local_consumed < target) {
 #else
 
-    std::jthread consumer([&queue, &producers_done]() {
-        while (true) {
+    std::jthread consumer(
+        [&queue, &producers_done]() {
+            while (true) {
 #endif
                 auto item = queue->dequeue();
 
@@ -168,7 +171,8 @@ TEST_CASE("MPSCQueue concurrent test") {
 #if RUN_CHECKS
             total_dequeued.fetch_add(local_consumed, std::memory_order_relaxed);
 #endif
-        });
+        }
+    );
 
     producers.clear();
     producers_done.store(true, std::memory_order_release);

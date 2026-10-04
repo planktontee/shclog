@@ -73,9 +73,11 @@ enum OpenError : u8 {
 };
 
 void close(fd_t fd) noexcept;
-std::expected<fd_t, OpenError> open(const char *const path,
-                                    const ::open_how *const how,
-                                    fd_t cwd = AT_FDCWD) noexcept;
+std::expected<fd_t, OpenError> open(
+    const char *const path,
+    const ::open_how *const how,
+    fd_t cwd = AT_FDCWD
+) noexcept;
 
 enum class OpenMode : u8 {
     read = O_RDONLY,
@@ -83,9 +85,11 @@ enum class OpenMode : u8 {
     read_write = O_RDWR,
 };
 
-std::expected<unique_fd, OpenError>
-tmpfile(const OpenMode openMode = OpenMode::read_write,
-        const u64 flags = O_CLOEXEC, const u64 mode = 0600) noexcept;
+std::expected<unique_fd, OpenError> tmpfile(
+    const OpenMode openMode = OpenMode::read_write,
+    const u64 flags = O_CLOEXEC,
+    const u64 mode = 0600
+) noexcept;
 
 // TODO: unroll errors
 enum class WriteError : u8 {
@@ -114,6 +118,6 @@ enum class ReadError : u8 {
     Unexpected,
 };
 
-std::expected<u64, ReadError> pread(const fd_t fd, const std::span<u8> buf,
-                                    const i64 offset);
+std::expected<u64, ReadError>
+pread(const fd_t fd, const std::span<u8> buf, const i64 offset);
 } // namespace shclog::io::file

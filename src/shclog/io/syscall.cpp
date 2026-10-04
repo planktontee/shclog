@@ -10,11 +10,18 @@ inline bool _errno_out_of_bounds(const i64 e) noexcept {
     return e < 0 || e > 177;
 }
 
-Errno debug_e_errno(const i32 e_errno,
-                    const std::source_location loc) noexcept {
+Errno debug_e_errno(
+    const i32 e_errno,
+    const std::source_location loc
+) noexcept {
     if constexpr (IS_DEBUG) {
-        std::println(stderr, "Panic in {}: {} (errno: {})", loc.function_name(),
-                     std::strerror(e_errno), e_errno);
+        std::println(
+            stderr,
+            "Panic in {}: {} (errno: {})",
+            loc.function_name(),
+            std::strerror(e_errno),
+            e_errno
+        );
         std::abort();
     }
     return Errno::UNEXPECTED;

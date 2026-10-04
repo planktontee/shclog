@@ -48,14 +48,14 @@ struct CastTransformFn<T, C, D, TarD> {
 };
 
 template <class F, class T, class C, class D, class TarD>
-concept DurationTransform =
-    Arithmetic<T> && Clock<C> && Duration<D> && Duration<TarD> &&
-    requires(F &f, const Delta<C, D> n) {
+concept DurationTransform = Arithmetic<T> && Clock<C> && Duration<D> &&
+    Duration<TarD> && requires(F &f, const Delta<C, D> n) {
         { f(n) } noexcept -> std::same_as<T>;
     };
 
-template <Clock C = std::chrono::steady_clock,
-          Duration D = std::chrono::nanoseconds>
+template <
+    Clock C = std::chrono::steady_clock,
+    Duration D = std::chrono::nanoseconds>
 struct Time {
 
   public:
@@ -63,9 +63,11 @@ struct Time {
 
     [[nodiscard]] bool started() const noexcept { return t0 != SENTINEL; }
 
-    template <class T, Duration TarD = D,
-              DurationTransform<T, C, D, TarD> Transform =
-                  CastTransformFn<T, C, D, TarD>>
+    template <
+        class T,
+        Duration TarD = D,
+        DurationTransform<T, C, D, TarD> Transform =
+            CastTransformFn<T, C, D, TarD>>
     [[nodiscard]] Sample<T>::PushResult
     sample(Sample<T> &sample, Transform transform = {}) noexcept {
         const auto r = sample.push(transform(C::now() - t0));

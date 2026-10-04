@@ -8,11 +8,11 @@ using namespace shclog::io::syscall;
 void munmap(void *const ptr, const usize size) noexcept {
     const c_int rc = ::munmap(ptr, size);
     switch (e_errno(rc)) {
-    case Errno::SUCCESS:
-        break;
-    default:
-        debug_e_errno();
-        break;
+        case Errno::SUCCESS:
+            break;
+        default:
+            debug_e_errno();
+            break;
     }
 }
 } // namespace shclog::io::mmap

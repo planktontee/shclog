@@ -51,8 +51,11 @@ TEST_CASE("Sample::avg of integer samples defaults to f64") {
 TEST_CASE("Sample::avg recovers the mean once total has overflowed") {
     auto samples = unwrap(Sample<u32>::make(8));
     // this is ignored
-    std::fill(samples.samples->begin(), samples.samples->end(),
-              std::numeric_limits<u32>::max());
+    std::fill(
+        samples.samples->begin(),
+        samples.samples->end(),
+        std::numeric_limits<u32>::max()
+    );
 
     for (const u32 v : {4'000'000'000U, 4'000'000'000U, 4U})
         unwrap(samples.push(v));
@@ -105,4 +108,26 @@ TEST_CASE("Sample::avg keeps the sign of negative samples") {
 
     REQUIRE(unwrap(low.total()).overflow);
     CHECK(unwrap(low.avg<i64>()) == min);
+}
+
+template <typename T> void check_invalid_percentiles() {
+    auto samples = unwrap(Sample<T>::make(2));
+    unwrap(samples.push(T{1}));
+    unwrap(samples.push(T{2}));
+
+    using L = std::numeric_limits<f64>;
+    for (const f64 p :
+         {L::quiet_NaN(), -L::infinity(), L::infinity(), -0.5, 1.5}) {
+        CAPTURE(p);
+        const auto r = samples.percentile(p);
+        REQUIRE(!r.has_value());
+        CHECK(r.error() == Sample<T>::PercentileError::InvalidPercentile);
+    }
+    CHECK(unwrap(samples.percentile(0.0)) == T{1});
+    CHECK(unwrap(samples.percentile(1.0)) == T{2});
+}
+
+TEST_CASE("Sample::percentile rejects anything outside [0, 1], NaN included") {
+    check_invalid_percentiles<u64>();
+    check_invalid_percentiles<f64>();
 }

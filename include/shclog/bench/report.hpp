@@ -4,6 +4,8 @@
 #include "shclog/collections/slice.hpp"
 #include "shclog/fmt.hpp"
 #include "shclog/math.hpp"
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <concepts>
 #include <expected>
@@ -22,26 +24,39 @@ enum class UnitReprError : u8 {
     OutOfRange,
 };
 
+template <class S> constexpr bool unit_scales_fit() noexcept {
+    using U = S::Unit;
+    const usize last = std::to_underlying(S::LAST);
+    for (usize i = 1; i <= last; ++i)
+        if (S::scale(static_cast<U>(i)) % S::scale(static_cast<U>(i - 1)) != 0)
+            return false;
+    // we *10 for decimal calculation, so this checks we have enough room
+    return S::scale(S::LAST) <= std::numeric_limits<usize>::max() / 10;
+}
+
+template <class S>
+concept UnitScale = requires { typename S::Unit; } &&
+    std::is_scoped_enum_v<typename S::Unit> && requires(const S::Unit u) {
+        { S::LAST } -> std::convertible_to<typename S::Unit>;
+        { S::scale(u) } noexcept -> std::same_as<usize>;
+        { S::symbol(u) } noexcept -> std::same_as<std::string_view>;
+    } && unit_scales_fit<S>();
+
 template <class U, class T>
 concept UnitFmt =
     requires { typename U::Unit; } && std::is_scoped_enum_v<typename U::Unit> &&
     requires(const U::Unit u, const T value, Slice<u8> &buf) {
-        { U::symbol(u) } noexcept -> std::same_as<std::u8string_view>;
+        { U::symbol(u) } noexcept -> std::same_as<std::string_view>;
         {
             U::write(value, u, buf)
         } noexcept -> std::same_as<std::expected<usize, UnitReprError>>;
     };
 
-struct TimeUnit {
+template <UnitScale S> struct UnitRepr : S {
   public:
-    enum class Unit : u8 {
-        nanoseconds,
-        microseconds,
-        milliseconds,
-        seconds,
-        minutes,
-        hours,
-    };
+    using Unit = S::Unit;
+
+    static constexpr usize LAST_UNIT = std::to_underlying(S::LAST);
 
     template <typename T>
         requires an_integer<T>
@@ -50,61 +65,33 @@ struct TimeUnit {
         return static_cast<Unit>(idx);
     }
 
-    static constexpr usize step(const Unit u) noexcept {
-        switch (u) {
-        case Unit::nanoseconds:
-            return 1;
-        case Unit::microseconds:
-        case Unit::milliseconds:
-        case Unit::seconds:
-            return 1000;
-        case Unit::minutes:
-        case Unit::hours:
-            return 60;
-        }
-        std::unreachable();
-    }
-
-    static constexpr std::u8string_view symbol(const Unit u) noexcept {
-        switch (u) {
-        case Unit::nanoseconds:
-            return u8"ns";
-        case Unit::microseconds:
-            // this is 3 bytes
-            return u8"µs";
-        case Unit::milliseconds:
-            return u8"ms";
-        case Unit::seconds:
-            return u8"s";
-        case Unit::minutes:
-            return u8"m";
-        case Unit::hours:
-            return u8"h";
-        }
-        std::unreachable();
-    }
-
-    static constexpr usize LAST_UNIT = std::to_underlying(Unit::hours);
-
     static constexpr usize ratio(const Unit from, const Unit to) noexcept {
         assert(from <= to);
-        usize r = 1;
-        for (usize i = usize{std::to_underlying(from)} + 1;
-             i <= std::to_underlying(to); ++i)
-            r *= step(TimeUnit::from(i));
-        return r;
+        if (from > to)
+            std::unreachable();
+        return S::scale(to) / S::scale(from);
     }
+
+    static constexpr usize SYMBOL_MAX_LEN = [] {
+        usize len = 0;
+        for (usize i = 0; i <= LAST_UNIT; ++i)
+            len = std::max(len, S::symbol(from(i)).size());
+        return len;
+    }();
 
     // (-)? + (max repr size) + ' ' + (max unit size)
     template <Arithmetic T>
-    static constexpr usize REPR_MAX_LEN = int_cast<usize>(
-        (an_integer<T> ? std::numeric_limits<T>::digits10 + 1
-                       : std::numeric_limits<T>::max_exponent10 + 1) +
-        1 + 1 + 3);
+    static constexpr usize REPR_MAX_LEN =
+        int_cast<usize>(
+            (an_integer<T> ? std::numeric_limits<T>::digits10 + 1
+                           : std::numeric_limits<T>::max_exponent10 + 1) +
+            1 + 1
+        ) +
+        SYMBOL_MAX_LEN;
 
     template <Arithmetic T>
-    static constexpr Unit biggest_unit_fit(const T value,
-                                           const Unit u) noexcept {
+    static constexpr Unit
+    biggest_unit_fit(const T value, const Unit u) noexcept {
         usize idx = std::to_underlying(u);
         while (idx < LAST_UNIT && fills_unit(value, u, from(idx + 1)))
             ++idx;
@@ -126,11 +113,11 @@ struct TimeUnit {
         }
 
         const Unit biggest_u = biggest_unit_fit(value, u);
-        const usize unit_ratio = ratio(u, biggest_u);
 
         T whole{};
         u8 tenth = 0;
         if constexpr (an_integer<T>) {
+            const usize unit_ratio = ratio(u, biggest_u);
             const T ratio_in_t = int_cast<T>(unit_ratio);
             whole = int_cast<T>(value / ratio_in_t);
 
@@ -146,12 +133,10 @@ struct TimeUnit {
                 if constexpr (std::is_signed_v<T>)
                     rem = rem < 0 ? -rem : rem;
 
-                // from reminder we get the first / 10 to get a
-                // single digit
-                tenth = int_cast<u8>(rem / (ratio_in_t / 10));
+                tenth = int_cast<u8>(int_cast<usize>(rem) * 10 / unit_ratio);
             }
         } else {
-            const T ratio_in_t = float_cast<T>(unit_ratio);
+            const T ratio_in_t = float_cast<T>(ratio(u, biggest_u));
             const T q = value / ratio_in_t;
             if (std::abs(q) < T{10}) {
                 const T tenths = std::trunc(value * T{10} / ratio_in_t);
@@ -210,8 +195,8 @@ struct TimeUnit {
         if (!put(' ')) [[unlikely]]
             return std::unexpected(UnitReprError::BufferTooSmall);
 
-        for (const u8 c : symbol(v.unit))
-            if (!put(c)) [[unlikely]]
+        for (const char c : S::symbol(v.unit))
+            if (!put(std::bit_cast<u8>(c))) [[unlikely]]
                 return std::unexpected(UnitReprError::BufferTooSmall);
 
         return int_cast<usize>(it - first);
@@ -219,15 +204,119 @@ struct TimeUnit {
 
   private:
     template <Arithmetic T>
-    static constexpr bool fills_unit(const T v, const Unit from,
-                                     const Unit to) noexcept {
-        const auto r = ratio(from, to);
+    static constexpr bool
+    fills_unit(const T v, const Unit from, const Unit to) noexcept {
+        const usize r = ratio(from, to);
         if constexpr (an_integer<T>)
             return std::cmp_greater_equal(v, r) ||
-                   std::cmp_less_equal(v, -int_cast<isize>(r));
+                std::cmp_less_equal(v, -int_cast<isize>(r));
         else
             return std::abs(v) >= float_cast<T>(r);
     }
 };
+
+struct TimeScale {
+    enum class Unit : u8 {
+        nanoseconds,
+        microseconds,
+        milliseconds,
+        seconds,
+        minutes,
+        hours,
+    };
+
+    static constexpr Unit LAST = Unit::hours;
+
+    static constexpr usize scale(const Unit u) noexcept {
+        switch (u) {
+            case Unit::nanoseconds:
+            case Unit::microseconds:
+            case Unit::milliseconds:
+            case Unit::seconds:
+                return ipow(int_cast<usize>(1e3), std::to_underlying(u));
+            case Unit::minutes:
+                return scale(Unit::seconds) * 60;
+            case Unit::hours:
+                return scale(Unit::minutes) * 60;
+        }
+        std::unreachable();
+    }
+
+    static constexpr std::string_view symbol(const Unit u) noexcept {
+        switch (u) {
+            case Unit::nanoseconds:
+                return "ns";
+            case Unit::microseconds:
+                // this is 3 bytes
+                return "µs";
+            case Unit::milliseconds:
+                return "ms";
+            case Unit::seconds:
+                return "s";
+            case Unit::minutes:
+                return "m";
+            case Unit::hours:
+                return "h";
+        }
+        std::unreachable();
+    }
+};
+
+struct ByteScale {
+    enum class Unit : u8 {
+        bytes,
+        kibibytes,
+        mebibytes,
+        gibibytes,
+        tebibytes,
+        pebibytes,
+        exbibytes,
+    };
+
+    static constexpr Unit LAST = Unit::exbibytes;
+
+    static constexpr usize scale(const Unit u) noexcept {
+        switch (u) {
+            case Unit::bytes:
+                return 1;
+            case Unit::kibibytes:
+                return usize{1} << 10;
+            case Unit::mebibytes:
+                return usize{1} << 20;
+            case Unit::gibibytes:
+                return usize{1} << 30;
+            case Unit::tebibytes:
+                return usize{1} << 40;
+            case Unit::pebibytes:
+                return usize{1} << 50;
+            case Unit::exbibytes:
+                return usize{1} << 60;
+        }
+        std::unreachable();
+    }
+
+    static constexpr std::string_view symbol(const Unit u) noexcept {
+        switch (u) {
+            case Unit::bytes:
+                return "B";
+            case Unit::kibibytes:
+                return "KiB";
+            case Unit::mebibytes:
+                return "MiB";
+            case Unit::gibibytes:
+                return "GiB";
+            case Unit::tebibytes:
+                return "TiB";
+            case Unit::pebibytes:
+                return "PiB";
+            case Unit::exbibytes:
+                return "EiB";
+        }
+        std::unreachable();
+    }
+};
+
+using TimeUnit = UnitRepr<TimeScale>;
+using ByteUnit = UnitRepr<ByteScale>;
 
 } // namespace shclog::bench::report

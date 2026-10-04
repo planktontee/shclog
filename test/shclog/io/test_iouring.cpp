@@ -1,5 +1,6 @@
 #include "shclog/doctest.hpp"
 
+#include "shclog/bench/report.hpp"
 #include "shclog/bench/sample.hpp"
 #include "shclog/bench/time.hpp"
 #include "shclog/cast.hpp"
@@ -35,6 +36,8 @@
 #include <ranges>
 #include <sched.h>
 #include <set>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <sys/resource.h>
 #include <thread>
@@ -44,6 +47,7 @@
 
 using namespace shclog;
 using namespace shclog::lang;
+using namespace shclog::bench::report;
 using namespace shclog::bench::sample;
 using namespace shclog::bench::time;
 using namespace shclog::io;
@@ -81,28 +85,129 @@ TEST_CASE("Pwritev/read with ring") {
     };
     CHECK(evented->register_buffers(std::span{buffers, 2}));
 
-    auto writev_push_r = evented->push_writev(tmp_fd_idx, std::span{iovecs, 2},
-                                              0, IOSQE_FIXED_FILE, true, 0);
+    auto writev_push_r = evented->push_writev(
+        tmp_fd_idx,
+        std::span{iovecs, 2},
+        0,
+        IOSQE_FIXED_FILE,
+        true,
+        0
+    );
     CHECK(writev_push_r == EventedIo::PushResult::Success);
 
     auto writev_pop_r = evented->pop_writev();
     REQUIRE(writev_pop_r.has_value());
     CHECK(writev_pop_r.value() == 16);
 
-    auto read_push_r = evented->push_read(tmp_fd_idx, std::span{r_buf_1, 12}, 0,
-                                          IOSQE_FIXED_FILE, true, 1);
+    auto read_push_r = evented->push_read(
+        tmp_fd_idx,
+        std::span{r_buf_1, 12},
+        0,
+        IOSQE_FIXED_FILE,
+        true,
+        1
+    );
     CHECK(read_push_r == EventedIo::PushResult::Success);
 
     auto read_pop_r = evented->pop_read();
     REQUIRE(read_pop_r.has_value());
     CHECK(read_pop_r.value() == 12);
-    CHECK(std::string_view(reinterpret_cast<const char *>(r_buf_1),
-                           read_pop_r.value()) == "hello world!");
+    CHECK(
+        std::string_view(
+            reinterpret_cast<const char *>(r_buf_1),
+            read_pop_r.value()
+        ) == "hello world!"
+    );
 }
 
 #define RUN_CHECKS 1
 #define BENCHMARK 0
 #define QUEUE_TYPE 2
+
+#if BENCHMARK
+template <class R, shclog::math::Arithmetic T>
+std::string unit_repr(const T v, const typename R::Unit u) {
+    std::string out;
+    out.resize_and_overwrite(
+        R::template REPR_MAX_LEN<T>,
+        [&](char *const p, const usize cap) {
+            Slice<u8> buf(ptr_cast<u8>(p), cap);
+            return unwrap(R::write(v, u, buf));
+        }
+    );
+    return out;
+}
+
+template <shclog::math::Arithmetic T> std::string fmt_ns(const T v) {
+    return unit_repr<TimeUnit>(v, TimeUnit::Unit::nanoseconds);
+}
+
+template <shclog::math::Arithmetic T> std::string fmt_bytes(const T v) {
+    return unit_repr<ByteUnit>(v, ByteUnit::Unit::bytes);
+}
+
+struct BenchReport {
+    static constexpr int LABEL_WIDTH = 12;
+    static constexpr std::pair<std::string_view, f64> PERCENTILES[] = {
+        {"p50", 0.50},
+        {"p90", 0.90},
+        {"p99", 0.99},
+        {"p99.9", 0.999},
+        {"p99.99", 0.9999},
+        {"p99.999", 0.99999},
+        {"p99.9999", 0.999999},
+    };
+
+    std::ostringstream out;
+
+    BenchReport() { out << std::fixed << std::setprecision(2); }
+
+    void title(const std::string_view name) {
+        out << '\n' << name << '\n' << std::string(name.size(), '=') << '\n';
+    }
+
+    void section(const std::string_view name) {
+        out << '\n' << name << '\n' << std::string(name.size(), '-') << '\n';
+    }
+
+    void row(const std::string_view label, const auto &value) {
+        out << std::left << std::setw(LABEL_WIDTH) << label << value << '\n';
+    }
+
+    void summary(
+        const usize producers,
+        const usize lines,
+        const u64 bytes,
+        const u64 elapsed_ns
+    ) {
+        const f64 seconds = float_cast<f64>(elapsed_ns) / 1.0e9;
+
+        title("MPSC -> dual-buffer WRITEV");
+        row("producers", producers);
+        row("lines", lines);
+        row("bytes", fmt_bytes(bytes));
+
+        section("throughput");
+        row("elapsed", fmt_ns(elapsed_ns));
+        row("lines/sec", float_cast<f64>(lines) / seconds);
+        row("bytes/sec", fmt_bytes(float_cast<f64>(bytes) / seconds));
+    }
+
+    void latency(const std::string_view name, Sample<u64> &s) {
+        REQUIRE(!s.empty());
+        const auto total = unwrap(s.total());
+        REQUIRE(!total.overflow);
+
+        section(name);
+        row("sum", fmt_ns(total.value));
+        row("avg", fmt_ns(unwrap(s.avg())));
+        row("min", fmt_ns(unwrap(s.min())));
+        for (const auto &[label, p] : PERCENTILES)
+            row(label, fmt_ns(unwrap(s.percentile(p))));
+        row("max", fmt_ns(unwrap(s.max())));
+    }
+};
+#endif
 
 TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     using clock = std::chrono::steady_clock;
@@ -157,12 +262,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
         const usize size;
 
         explicit Message(const usize size) noexcept
-            :
-#if QUEUE_TYPE == 2
-              node(),
-#endif
-              data(ptr_cast<u8>(this + 1)), size(size) {
-        }
+            : data(ptr_cast<u8>(this + 1))
+            , size(size) {}
 
         std::span<u8> bytes() noexcept { return {data, size}; }
 
@@ -170,8 +271,11 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             return {data, size};
         }
 
-        static void *operator new(const usize header, const usize payload,
-                                  const std::nothrow_t &) noexcept {
+        static void *operator new(
+            const usize header,
+            const usize payload,
+            const std::nothrow_t &
+        ) noexcept {
             return ::operator new(header + payload, std::nothrow);
         }
 
@@ -179,8 +283,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             ::operator delete(p);
         }
 
-        static void operator delete(void *const p, usize,
-                                    const std::nothrow_t &) noexcept {
+        static void
+        operator delete(void *const p, usize, const std::nothrow_t &) noexcept {
             ::operator delete(p);
         }
     };
@@ -202,20 +306,28 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
         std::vector<Sample<u64>> producers;
 
-        Stats(const usize consumer_capacity, const usize producers_n,
-              const usize producer_capacity, const usize max_line_len) noexcept
-            : falloc(unwrap(Sample<u64>::make(max_line_len * consumer_capacity /
-                                              ALLOC_WATERMARK))),
-              queue(unwrap(Sample<u64>::make(consumer_capacity))),
-              memcpy(unwrap(Sample<u64>::make(consumer_capacity))),
-              free(unwrap(Sample<u64>::make(consumer_capacity))),
-              push(unwrap(Sample<u64>::make(consumer_capacity))),
-              pop(unwrap(Sample<u64>::make(consumer_capacity))) {
+        Stats(
+            const usize consumer_capacity,
+            const usize producers_n,
+            const usize producer_capacity,
+            const usize max_line_len
+        ) noexcept
+            : falloc(unwrap(
+                  Sample<u64>::make(
+                      max_line_len * consumer_capacity / ALLOC_WATERMARK
+                  )
+              ))
+            , queue(unwrap(Sample<u64>::make(consumer_capacity)))
+            , memcpy(unwrap(Sample<u64>::make(consumer_capacity)))
+            , free(unwrap(Sample<u64>::make(consumer_capacity)))
+            , push(unwrap(Sample<u64>::make(consumer_capacity)))
+            , pop(unwrap(Sample<u64>::make(consumer_capacity))) {
 
             producers.reserve(producers_n);
             for (usize i = 0; i < producers_n; ++i)
                 producers.push_back(
-                    unwrap(Sample<u64>::make(producer_capacity)));
+                    unwrap(Sample<u64>::make(producer_capacity))
+                );
         }
     };
 
@@ -289,8 +401,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     // CHECK(SetPriorityResult::Success == set_priority(-20));
     auto cpu_view =
         std::views::iota(*target_cores.begin(), *target_cores.rbegin() + 1) |
-        std::views::filter(
-            [&target_cores](usize x) { return target_cores.contains(x); });
+        std::views::filter([&target_cores](usize x) {
+            return target_cores.contains(x);
+        });
     CHECK(SetCpuAffinityResult::Success == set_cpu_afinity(cpu_view));
 
     REQUIRE(target_cores.size() >= 1);
@@ -312,8 +425,10 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     for (usize producer_id = 0; producer_id < PRODUCERS; ++producer_id) {
         producers.emplace_back([&, producer_id] {
 #if BENCHMARK
-            CHECK(SetCpuAffinityResult::Success ==
-                  set_cpu_afinity(pick_cpu(producer_id)));
+            CHECK(
+                SetCpuAffinityResult::Success ==
+                set_cpu_afinity(pick_cpu(producer_id))
+            );
             // CHECK(SetPriorityResult::Success == set_priority(-20));
             Time p_time;
 #endif
@@ -390,9 +505,12 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
             c_time.start();
 #endif
             assert(std::in_range<off_t>(last_expand));
-            [[maybe_unused]] auto rc =
-                fallocate(tmp_fd.get(), FALLOC_FL_KEEP_SIZE,
-                          int_cast<off_t>(last_expand), PREALLOC_CHUNK);
+            [[maybe_unused]] auto rc = fallocate(
+                tmp_fd.get(),
+                FALLOC_FL_KEEP_SIZE,
+                int_cast<off_t>(last_expand),
+                PREALLOC_CHUNK
+            );
 #if BENCHMARK == 1
             unwrap(c_time.sample(stats.falloc));
 #endif
@@ -441,8 +559,8 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
                 break;
             } else {
 #if RUN_CHECKS
-                expected.insert(expected.end(), data_span.begin(),
-                                data_span.end());
+                expected
+                    .insert(expected.end(), data_span.begin(), data_span.end());
 #endif
                 io_bytes[active_buffer] += data_span.size();
 #if BENCHMARK == 1
@@ -486,8 +604,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
 
 #if RUN_CHECKS
-            CHECK(pop_r.value() ==
-                  static_cast<i32>(io_bytes[in_flight_buffer]));
+            CHECK(
+                pop_r.value() == static_cast<i32>(io_bytes[in_flight_buffer])
+            );
 #endif
             in_flight[in_flight_buffer] = false;
         }
@@ -500,10 +619,16 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #endif
             evented->push_write(
                 tmp_fd_idx,
-                std::span<const u8>{buffers[active_buffer].data(),
-                                    io_bytes[active_buffer]},
-                file_offset, IOSQE_FIXED_FILE, 0, true,
-                int_cast(active_buffer));
+                std::span<const u8>{
+                    buffers[active_buffer].data(),
+                    io_bytes[active_buffer]
+                },
+                file_offset,
+                IOSQE_FIXED_FILE,
+                0,
+                true,
+                int_cast(active_buffer)
+            );
 #if BENCHMARK == 1
         unwrap(c_time.sample(stats.push));
 #endif
@@ -514,7 +639,9 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK == 1
         ++stats.writes;
         stats.max_batch_lines = std::max(
-            stats.max_batch_lines, static_cast<u64>(line_count[active_buffer]));
+            stats.max_batch_lines,
+            static_cast<u64>(line_count[active_buffer])
+        );
         stats.bytes += io_bytes[active_buffer];
 #endif
 
@@ -567,8 +694,11 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 
         const usize chunk = std::min(remaining, MAX_IO_BYTES);
         auto push_r = evented->push_read(
-            tmp_fd_idx, std::span{actual.data() + read_offset, chunk},
-            int_cast(read_offset), IOSQE_FIXED_FILE);
+            tmp_fd_idx,
+            std::span{actual.data() + read_offset, chunk},
+            int_cast(read_offset),
+            IOSQE_FIXED_FILE
+        );
 
         CHECK(push_r == EventedIo::PushResult::Success);
 
@@ -591,10 +721,12 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
     }
 
     if (mismatch != expected.size()) {
-        MESSAGE("first mismatch at byte "
-                << mismatch
-                << " expected=" << static_cast<unsigned>(expected[mismatch])
-                << " actual=" << static_cast<unsigned>(actual[mismatch]));
+        MESSAGE(
+            "first mismatch at byte "
+            << mismatch
+            << " expected=" << static_cast<unsigned>(expected[mismatch])
+            << " actual=" << static_cast<unsigned>(actual[mismatch])
+        );
 
         CHECK(mismatch == expected.size());
     }
@@ -603,230 +735,54 @@ TEST_CASE("MPSC -> dual-buffer/memcpy WRITE") {
 #if BENCHMARK
     const auto elapsed_ns =
         static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                             benchmark_completed - benchmark_start)
+                             benchmark_completed - benchmark_start
+        )
                              .count());
 
-    const auto elapsed_seconds = elapsed_ns / 1.0e9L;
-
-    const auto lines_per_second = consumed_lines / elapsed_seconds;
+    BenchReport report;
 
 #if BENCHMARK == 1
-    REQUIRE(!stats.falloc.empty());
-    REQUIRE(!stats.push.empty());
-    REQUIRE(!stats.pop.empty());
-    REQUIRE(!stats.queue.empty());
-    REQUIRE(!stats.free.empty());
-    REQUIRE(!stats.memcpy.empty());
+    report.summary(PRODUCERS, consumed_lines, stats.bytes, elapsed_ns);
 
-    REQUIRE(!unwrap(stats.falloc.total()).overflow);
-    REQUIRE(!unwrap(stats.push.total()).overflow);
-    REQUIRE(!unwrap(stats.pop.total()).overflow);
-    REQUIRE(!unwrap(stats.queue.total()).overflow);
-    REQUIRE(!unwrap(stats.free.total()).overflow);
-    REQUIRE(!unwrap(stats.memcpy.total()).overflow);
+    report.section("batching");
+    report.row("writes", stats.writes);
+    report.row(
+        "avg lines",
+        float_cast<f64>(consumed_lines) / float_cast<f64>(stats.writes)
+    );
+    report.row("max lines", stats.max_batch_lines);
+    report.row(
+        "avg bytes",
+        fmt_bytes(float_cast<f64>(stats.bytes) / float_cast<f64>(stats.writes))
+    );
 
-    const auto mib_per_second = stats.bytes / elapsed_seconds / (1 << 20);
-
-    const f64 avg_falloc_ns = unwrap(stats.falloc.avg<f64>());
-
-    const f64 avg_push_io_ns = unwrap(stats.push.avg<f64>());
-    const f64 avg_pop_io_ns = unwrap(stats.pop.avg<f64>());
-
-    const f64 avg_queue_ns = unwrap(stats.queue.avg<f64>());
-
-    const f64 avg_memcpy_ns = unwrap(stats.memcpy.avg<f64>());
-
-    const f64 avg_free_ns = unwrap(stats.free.avg<f64>());
-
-    const f64 avg_batch_lines =
-        float_cast<f64>(consumed_lines) / float_cast<f64>(stats.writes);
-
-    const f64 avg_write_bytes =
-        float_cast<f64>(stats.bytes) / float_cast<f64>(stats.writes);
-
-    std::ostringstream report;
-
-    const auto reduce_as_micros =
-        [](const std::span<const u64> samples) -> auto {
-        return std::transform_reduce(samples.begin(), samples.end(), 0.0L,
-                                     std::plus<>{},
-                                     [](const auto ns) { return ns / 1.0e3L; });
-    };
-
-    Sample<u64> all_producers = unwrap(Sample<u64>::make(std::transform_reduce(
-        stats.producers.begin(), stats.producers.end(), usize{0}, std::plus<>{},
-        [](const auto &s) { return s.count; })));
-    for (auto &samples : stats.producers) {
-        REQUIRE(!unwrap(samples.total()).overflow);
+    Sample<u64> all_producers = unwrap(
+        Sample<u64>::make(
+            std::transform_reduce(
+                stats.producers.begin(),
+                stats.producers.end(),
+                usize{0},
+                std::plus<>{},
+                [](const auto &s) { return s.count; }
+            )
+        )
+    );
+    for (const auto &samples : stats.producers)
         std::ranges::for_each(samples.span(), [&all_producers](const u64 v) {
             unwrap(all_producers.push(v));
         });
-    }
-    const auto avg_enqueue_ns = std::transform_reduce(
-        all_producers.span().begin(), all_producers.span().end(), 0.0L,
-        std::plus<>{}, [&all_producers](const auto ns) {
-            return float_cast<f80>(ns) / float_cast<f80>(all_producers.count);
-        });
 
-    report << "\n"
-           << std::fixed << std::setprecision(2)
-           << "MPSC -> dual-buffer WRITEV\n"
-           << "==========================\n"
-           << "producers\t" << PRODUCERS << "\n"
-           << "lines\t\t" << consumed_lines << "\n"
-           << "bytes\t\t" << stats.bytes * (1.0L / (1 << 30)) << " GiB\n"
-           << "\n"
-
-           << "throughput\n"
-           << "----------\n"
-           << "elapsed\t\t" << elapsed_ns / 1.0e9L << " s\n"
-           << "lines/sec\t" << lines_per_second << "\n"
-           << "MiB/sec\t\t" << mib_per_second << "\n"
-           << "\n"
-
-           << "batching\n"
-           << "--------\n"
-           << "writes\t\t" << stats.writes << "\n"
-           << "avg lines\t" << avg_batch_lines << "\n"
-           << "max lines\t" << stats.max_batch_lines << "\n"
-           << "avg bytes\t" << avg_write_bytes / 1024.0L << " KiB\n"
-           << "\n"
-
-           << "falloc latency\n"
-           << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.falloc.span()) / 1.0e6L
-           << " s\n"
-           << "avg\t\t\t" << avg_falloc_ns << " ns\n"
-           << "min\t\t\t" << unwrap(stats.falloc.min()) << " ns\n"
-           << "p50\t\t\t" << unwrap(stats.falloc.percentile(0.50)) << " ns\n"
-           << "p90\t\t\t" << unwrap(stats.falloc.percentile(0.90)) << " ns\n"
-           << "p99\t\t\t" << unwrap(stats.falloc.percentile(0.99)) << " ns\n"
-           << "p99.9\t\t\t" << unwrap(stats.falloc.percentile(0.999)) / 1.0e6L
-           << " ms\n"
-           << "p99.99\t\t\t" << unwrap(stats.falloc.percentile(0.9999)) / 1.0e6L
-           << " ms\n"
-           << "p99.999\t\t\t"
-           << unwrap(stats.falloc.percentile(0.99999)) / 1.0e6L << " ms\n"
-           << "max\t\t\t" << unwrap(stats.falloc.max()) / 1.0e6L << " ms\n"
-           << "\n"
-
-           << "enqueue latency\n"
-           << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(all_producers.span()) / 1.0e6L
-           << " s\n"
-           << "avg\t\t\t" << avg_enqueue_ns << " ns\n"
-           << "min\t\t\t" << unwrap(all_producers.min()) << " ns\n"
-           << "p50\t\t\t" << unwrap(all_producers.percentile(0.50)) << " ns\n"
-           << "p90\t\t\t" << unwrap(all_producers.percentile(0.90)) << " ns\n"
-           << "p99\t\t\t" << unwrap(all_producers.percentile(0.99)) << " ns\n"
-           << "p99.9\t\t\t" << unwrap(all_producers.percentile(0.999)) / 1.0e6L
-           << " ms\n"
-           << "p99.99\t\t\t"
-           << unwrap(all_producers.percentile(0.9999)) / 1.0e6L << " ms\n"
-           << "p99.999\t\t\t"
-           << unwrap(all_producers.percentile(0.99999)) / 1.0e6L << " ms\n"
-           << "max\t\t\t" << unwrap(all_producers.max()) / 1.0e6L << " ms\n"
-           << "\n"
-
-           << "dequeue latency\n"
-           << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.queue.span()) / 1.0e6L
-           << " s\n"
-           << "avg\t\t\t" << avg_queue_ns << " ns\n"
-           << "min\t\t\t" << unwrap(stats.queue.min()) << " ns\n"
-           << "p50\t\t\t" << unwrap(stats.queue.percentile(0.50)) << " ns\n"
-           << "p90\t\t\t" << unwrap(stats.queue.percentile(0.90)) << " ns\n"
-           << "p99\t\t\t" << unwrap(stats.queue.percentile(0.99)) << " ns\n"
-           << "p99.9999\t\t"
-           << unwrap(stats.queue.percentile(0.999999)) / 1.0e3L << " µs\n"
-           << "max\t\t\t" << unwrap(stats.queue.max()) / 1.0e3L << " µs\n"
-           << "\n"
-
-           << "memcpy latency\n"
-           << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.memcpy.span()) / 1.0e6L
-           << " s\n"
-           << "avg\t\t\t" << avg_memcpy_ns << " ns\n"
-           << "min\t\t\t" << unwrap(stats.memcpy.min()) << " ns\n"
-           << "p50\t\t\t" << unwrap(stats.memcpy.percentile(0.5)) << " ns\n"
-           << "p90\t\t\t" << unwrap(stats.memcpy.percentile(0.9)) << " ns\n"
-           << "p99\t\t\t" << unwrap(stats.memcpy.percentile(0.99)) << " ns\n"
-           << "p99.9999\t\t"
-           << unwrap(stats.memcpy.percentile(0.999999)) / 1.0e3L << " µs\n"
-           << "max\t\t\t" << unwrap(stats.memcpy.max()) / 1.0e3L << " µs\n"
-           << "\n"
-
-           << "free latency\n"
-           << "-------------\n"
-           << "sum\t\t\t" << reduce_as_micros(stats.free.span()) / 1.0e6L
-           << " s\n"
-           << "avg\t\t\t" << avg_free_ns << " ns\n"
-           << "min\t\t\t" << unwrap(stats.free.min()) << " ns\n"
-           << "p50\t\t\t" << unwrap(stats.free.percentile(0.50)) << " ns\n"
-           << "p90\t\t\t" << unwrap(stats.free.percentile(0.90)) << " ns\n"
-           << "p99\t\t\t" << unwrap(stats.free.percentile(0.99)) << " ns\n"
-           << "p99.9999\t\t" << unwrap(stats.free.percentile(0.999999)) / 1.0e3L
-           << " µs\n"
-           << "max\t\t\t" << unwrap(stats.free.max()) / 1.0e3L << " µs\n"
-           << "\n"
-
-           << "I/O latency (pop)\n"
-           << "-----------\n"
-           << "sum\t\t" << reduce_as_micros(stats.pop.span()) / 1.0e6L << " s\n"
-           << "avg\t\t" << avg_pop_io_ns / 1.0e3L << " µs\n"
-           << "min\t\t" << unwrap(stats.pop.min()) << " ns\n"
-           << "p50\t\t" << unwrap(stats.pop.percentile(0.50)) / 1.0e3L
-           << " µs\n"
-           << "p90\t\t" << unwrap(stats.pop.percentile(0.90)) / 1.0e3L
-           << " µs\n"
-           << "p99\t\t" << unwrap(stats.pop.percentile(0.99)) / 1.0e3L
-           << " µs\n"
-           << "p99.9\t\t" << unwrap(stats.pop.percentile(0.999)) / 1.0e6L
-           << " ms\n"
-           << "p99.99\t\t" << unwrap(stats.pop.percentile(0.9999)) / 1.0e6L
-           << " ms\n"
-           << "p99.999\t\t" << unwrap(stats.pop.percentile(0.99999)) / 1.0e6L
-           << " ms\n"
-           << "max\t\t" << unwrap(stats.pop.max()) / 1.0e6L << " ms\n"
-           << "\n"
-
-           << "I/O latency (push)\n"
-           << "-----------\n"
-           << "sum\t\t" << reduce_as_micros(stats.push.span()) / 1.0e3L
-           << " ms\n"
-           << "avg\t\t" << avg_push_io_ns << " ns\n"
-           << "min\t\t" << unwrap(stats.push.min()) << " ns\n"
-           << "p50\t\t" << unwrap(stats.push.percentile(0.50)) << " ns\n"
-           << "p90\t\t" << unwrap(stats.push.percentile(0.90)) << " ns\n"
-           << "p99\t\t" << unwrap(stats.push.percentile(0.99)) << " ns\n"
-           << "p99.9\t\t" << unwrap(stats.push.percentile(0.999)) / 1.0e3L
-           << " µs\n"
-           << "p99.99\t\t" << unwrap(stats.push.percentile(0.9999)) / 1.0e3L
-           << " µs\n"
-           << "p99.999\t\t" << unwrap(stats.push.percentile(0.99999)) / 1.0e3L
-           << " µs\n"
-           << "max\t\t" << unwrap(stats.push.max()) / 1.0e3L << " µs\n";
-
-    MESSAGE(report.str());
+    report.latency("falloc latency", stats.falloc);
+    report.latency("enqueue latency", all_producers);
+    report.latency("dequeue latency", stats.queue);
+    report.latency("memcpy latency", stats.memcpy);
+    report.latency("free latency", stats.free);
+    report.latency("I/O latency (pop)", stats.pop);
+    report.latency("I/O latency (push)", stats.push);
 #elif BENCHMARK == 2
-    const auto mib_per_second = byte_count / elapsed_seconds / (1 << 20);
-
-    std::ostringstream report;
-    report << "\n"
-           << std::fixed << std::setprecision(2)
-           << "MPSC -> dual-buffer WRITEV\n"
-           << "==========================\n"
-           << "producers\t" << PRODUCERS << "\n"
-           << "lines\t\t" << consumed_lines << "\n"
-           << "bytes\t\t" << byte_count * (1.0L / (1 << 30)) << " GiB\n"
-           << "\n"
-
-           << "throughput\n"
-           << "----------\n"
-           << "elapsed\t\t" << elapsed_ns / 1.0e9L << " s\n"
-           << "lines/sec\t" << lines_per_second << "\n"
-           << "MiB/sec\t\t" << mib_per_second << "\n";
-    MESSAGE(report.str());
+    report.summary(PRODUCERS, consumed_lines, byte_count, elapsed_ns);
 #endif
+
+    MESSAGE(report.out.str());
 #endif
 }

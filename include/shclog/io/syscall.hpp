@@ -329,5 +329,6 @@ Errno e_errno(const void *rc) noexcept;
 
 Errno debug_e_errno(
     const i32 e_errno = errno,
-    const std::source_location loc = std::source_location::current()) noexcept;
+    const std::source_location loc = std::source_location::current()
+) noexcept;
 } // namespace shclog::io::syscall

@@ -24,11 +24,14 @@ tidy: $(TIDY_TARGETS)
 
 build: tidy $(BUILDS)
 
+format: build/debug
+	ninja -C $< clang-format
+
 setup: $(addprefix build/,$(BUILDS))
 
 clean:
 	@if [ -L build ]; then echo "build is a symlink, refusing to remove" >&2; exit 1; fi
 	rm -rf build
 
-.PHONY: build setup $(BUILDS)
+.PHONY: build setup format $(BUILDS)
 

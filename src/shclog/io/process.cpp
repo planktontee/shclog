@@ -18,8 +18,8 @@ pthread_t_uwrap(const std::optional<const pthread_t> target) noexcept {
     return pthread_self();
 }
 
-SetPriorityResult set_priority(const i32 niceness,
-                               const std::optional<pid_t> target) noexcept {
+SetPriorityResult
+set_priority(const i32 niceness, const std::optional<pid_t> target) noexcept {
     const auto rc =
         setpriority(PRIO_PROCESS, int_cast(target.value_or(0)), niceness);
 
@@ -27,16 +27,16 @@ SetPriorityResult set_priority(const i32 niceness,
         return SetPriorityResult::Success;
 
     switch (e_errno(rc)) {
-    case Errno::SUCCESS:
-        std::unreachable();
-    case Errno::SRCH:
-        return SetPriorityResult::InvalidParam;
-    case Errno::ACCES:
-    case Errno::PERM:
-        return SetPriorityResult::AccessDenied;
-    default:
-        debug_e_errno();
-        return SetPriorityResult::Unexpected;
+        case Errno::SUCCESS:
+            std::unreachable();
+        case Errno::SRCH:
+            return SetPriorityResult::InvalidParam;
+        case Errno::ACCES:
+        case Errno::PERM:
+            return SetPriorityResult::AccessDenied;
+        default:
+            debug_e_errno();
+            return SetPriorityResult::Unexpected;
     }
     std::unreachable();
 }

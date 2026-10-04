@@ -42,4 +42,15 @@ add_with_overflow(const T a, const T b) noexcept {
     }
 }
 
+template <typename T, typename E> constexpr T ipow(T base, E exp) noexcept {
+    T result{1};
+    while (exp) {
+        if (exp & 1)
+            result *= base;
+        exp >>= 1;
+        if (exp)
+            base *= base;
+    }
+    return result;
+}
 } // namespace shclog::math

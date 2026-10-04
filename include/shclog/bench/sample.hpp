@@ -80,13 +80,8 @@ struct Sample {
 
     [[nodiscard]] std::expected<T, PercentileError>
     percentile(const f64 p) noexcept {
-        if (p > 1.0 || p < 0.0) [[unlikely]]
+        if (std::isnan(p) || p > 1.0 || p < 0.0) [[unlikely]]
             return std::unexpected(PercentileError::InvalidPercentile);
-
-        if constexpr (std::is_floating_point_v<T>) {
-            if (!std::isfinite(p)) [[unlikely]]
-                return std::unexpected(PercentileError::InvalidPercentile);
-        }
 
         if (count == 0) [[unlikely]]
             return std::unexpected(PercentileError::EmptySamples);
@@ -108,11 +103,13 @@ struct Sample {
     template <typename C = std::conditional_t<std::floating_point<T>, T, f64>>
         requires Arithmetic<C>
     [[nodiscard]] std::expected<C, AvgError> avg() const noexcept {
-        static_assert(std::is_floating_point_v<C> ||
-                          (an_integer<T> && sizeof(C) > sizeof(T) &&
-                           (std::is_signed_v<C> || std::is_unsigned_v<T>)),
-                      "avg<C> needs a floating C, or an integer C wider than T "
-                      "that keeps its sign, to recover from total overflow");
+        static_assert(
+            std::is_floating_point_v<C> ||
+                (an_integer<T> && sizeof(C) > sizeof(T) &&
+                 (std::is_signed_v<C> || std::is_unsigned_v<T>)),
+            "avg<C> needs a floating C, or an integer C wider than T "
+            "that keeps its sign, to recover from total overflow"
+        );
 
         if (count == 0) [[unlikely]]
             return std::unexpected(AvgError::EmptySamples);
@@ -123,8 +120,12 @@ struct Sample {
             // every partial sum within the range of the samples
             if (_total.overflow) [[unlikely]]
                 return std::transform_reduce(
-                    span().begin(), span().end(), C{}, std::plus{},
-                    [n](const T x) { return float_cast<C>(x) / n; });
+                    span().begin(),
+                    span().end(),
+                    C{},
+                    std::plus{},
+                    [n](const T x) { return float_cast<C>(x) / n; }
+                );
             return float_cast<C>(_total.value) / n;
         } else {
             const C n = int_cast<C>(count);
@@ -138,25 +139,26 @@ struct Sample {
         EmptySamples,
     };
 
-    [[nodiscard]] std::expected<T, SampleError> min() const {
+    [[nodiscard]] std::expected<T, SampleError> min() const noexcept {
         if (count == 0) [[unlikely]]
             return std::unexpected(SampleError::EmptySamples);
         return _min;
     }
 
-    [[nodiscard]] std::expected<T, SampleError> max() const {
+    [[nodiscard]] std::expected<T, SampleError> max() const noexcept {
         if (count == 0) [[unlikely]]
             return std::unexpected(SampleError::EmptySamples);
         return _max;
     }
 
-    [[nodiscard]] std::expected<TwithOverflow, SampleError> total() const {
+    [[nodiscard]] std::expected<TwithOverflow, SampleError>
+    total() const noexcept {
         if (count == 0) [[unlikely]]
             return std::unexpected(SampleError::EmptySamples);
         return _total;
     }
 
-    [[nodiscard]] bool empty() const { return count == 0; }
+    [[nodiscard]] bool empty() const noexcept { return count == 0; }
 
   private:
     T _min = std::numeric_limits<T>::max();
